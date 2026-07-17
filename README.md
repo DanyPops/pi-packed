@@ -31,7 +31,7 @@ bun src/cli.ts updates            # diff installed vs latest
 
 # In Pi:
 pi -e /path/to/pi-packed/extension/src/index.ts   # ephemeral
-# or: pi install git:github.com/dpopsuev/pi-packed
+# or: pi install git:github.com/DanyPops/pi-packed
 /packages                                              # interactive panel
 ```
 

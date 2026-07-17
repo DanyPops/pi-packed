@@ -6,7 +6,7 @@
  * lives in the Bun service (src/): registry access, caching, watcher,
  * catalog sync, install execution.
  *
- * Install: pi install git:github.com/dpopsuev/pi-packed
+ * Install: pi install git:github.com/DanyPops/pi-packed
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerTools } from "./tools.js";

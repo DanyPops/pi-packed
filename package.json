@@ -1,17 +1,20 @@
 {
-  "name": "pi-packed",
+  "name": "@danypops/pi-packed",
   "version": "0.1.0",
   "description": "Package service for the Pi agent: search/info/install/updates + /packages TUI, backed by a long-running Bun service",
   "type": "module",
-  "keywords": ["pi-package"],
-  "private": true,
+  "keywords": [
+    "pi-package"
+  ],
   "scripts": {
     "test": "bun test",
     "cli": "bun src/cli.ts",
     "serve": "bun src/cli.ts serve"
   },
   "pi": {
-    "extensions": ["extension/src/index.ts"]
+    "extensions": [
+      "extension/src/index.ts"
+    ]
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
@@ -20,5 +23,14 @@
   },
   "devDependencies": {
     "bun-types": "latest"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DanyPops/pi-packed.git"
+  },
+  "files": [
+    "src",
+    "extension",
+    "README.md"
+  ]
 }
