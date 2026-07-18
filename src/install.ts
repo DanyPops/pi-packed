@@ -4,8 +4,12 @@ import type { Installer } from "./ports.ts";
 /** Bare npm package name (for `packed remove`). */
 export const NAME_RE = /^(@[A-Za-z0-9._-]+\/)?[A-Za-z0-9._-]+$/;
 
+export function defaultPiBin(): string {
+	return process.env["PI_PACKED_PI_BIN"] ?? process.env["PI_BIN"] ?? "pi";
+}
+
 export class ExecInstaller implements Installer {
-	constructor(private bin = "pi") {}
+	constructor(private bin = defaultPiBin()) {}
 
 	private async run(args: string[]): Promise<string> {
 		const proc = Bun.spawn([this.bin, ...args], { stdout: "pipe", stderr: "pipe" });
