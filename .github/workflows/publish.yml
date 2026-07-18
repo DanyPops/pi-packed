@@ -33,14 +33,7 @@ jobs:
           node-version: "24"
           package-manager-cache: false
 
-      - name: Debug OIDC env presence
-        run: |
-          echo "GITHUB_ACTIONS=${GITHUB_ACTIONS}"
-          echo "ACTIONS_ID_TOKEN_REQUEST_URL=${ACTIONS_ID_TOKEN_REQUEST_URL:+SET}"
-          echo "ACTIONS_ID_TOKEN_REQUEST_TOKEN=${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+SET}"
-
       # Trusted publishing needs npm >= 11.5.1; Node's bundled npm can be older.
       - run: npm install -g npm@latest && npm --version
 
-      # verbose: surfaces the OIDC token-exchange error body (log.verbose otherwise)
-      - run: npm publish --access public --loglevel verbose
+      - run: npm publish --access public
