@@ -33,4 +33,7 @@ jobs:
           node-version: "24"
           package-manager-cache: false
 
+      # Trusted publishing needs npm >= 11.5.1; Node's bundled npm can be older.
+      - run: npm install -g npm@latest && npm --version
+
       - run: npm publish --access public
