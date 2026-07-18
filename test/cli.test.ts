@@ -203,13 +203,14 @@ describe("daemon client", () => {
 
 describe("packed service (systemd unit)", () => {
 	it("renders a user unit with runtime paths and idle disabled", async () => {
-		const d = deps({ execPath: "/usr/bin/bun", cliPath: "/opt/pi-packed/src/cli.ts" });
+		const d = deps({ execPath: "/usr/bin/bun", cliPath: "/opt/pi-packed/src/cli.ts", piBin: "/home/x/.cache/.bun/bin/pi" });
 		const { code, out } = await cliRun(["service"], d);
 		expect(code).toBe(0);
 		expect(out).toContain("[Service]");
 		expect(out).toContain("ExecStart=/usr/bin/bun /opt/pi-packed/src/cli.ts serve");
 		expect(out).toContain("Restart=on-failure");
 		expect(out).toContain("PI_PACKED_IDLE_SECS=0");
+		expect(out).toContain("Environment=PI_BIN=/home/x/.cache/.bun/bin/pi");
 		expect(out).toContain("WantedBy=default.target");
 	});
 });

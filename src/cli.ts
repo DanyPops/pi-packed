@@ -10,7 +10,12 @@ import { readInstalledPackages } from "./installed.ts";
 import { checkUpdates } from "./watcher.ts";
 import { syncCatalog } from "./catalog.ts";
 import { openDb, searchLocal, catalogList, getSyncMeta, latestVersion, dbPath } from "./db.ts";
-import { NAME_RE } from "./install.ts";
+import { NAME_RE, defaultPiBin } from "./install.ts";
+
+function defaultPiBinForUnit(): string | undefined {
+	const b = defaultPiBin();
+	return b === "pi" ? undefined : b; // bare name needs no pin
+}
 import {
 	VERSION, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, NPM_REGISTRY_BASE, SEARCH_PAGE_SIZE, MIRROR_PAGE_DELAY_MS,
 } from "./constants.ts";
@@ -40,6 +45,7 @@ export interface CliDeps {
 	piHome: string;
 	execPath?: string; // bun binary (defaults to process.execPath)
 	cliPath?: string; // this CLI's entry file (for the systemd unit)
+	piBin?: string; // pi binary path to pin into the unit's Environment
 }
 
 export interface CliResult {
@@ -209,7 +215,7 @@ const commands: Record<string, { usage: string; run: Command }> = {
 		async run(_rest, d) {
 			const execPath = d.execPath ?? process.execPath;
 			const cliPath = d.cliPath ?? new URL("./cli.ts", import.meta.url).pathname;
-			return ok(renderUnit(execPath, cliPath));
+			return ok(renderUnit(execPath, cliPath, d.piBin ?? defaultPiBinForUnit()));
 		},
 	},
 
@@ -223,7 +229,10 @@ const commands: Record<string, { usage: string; run: Command }> = {
 
 /** systemd user unit. Idle self-exit is disabled — systemd owns the
  * lifecycle (Restart=on-failure takes over). */
-export function renderUnit(execPath: string, cliPath: string): string {
+export function renderUnit(execPath: string, cliPath: string, piBin?: string): string {
+	// systemd does not read shell rc files: PI_BIN must be explicit so the
+	// daemon's install/remove execs can find the pi binary.
+	const piEnv = piBin ? `Environment=PI_BIN=${piBin}\n` : "";
 	return `[Unit]
 Description=pi-packed package service (Pi agent)
 
@@ -233,7 +242,7 @@ ExecStart=${execPath} ${cliPath} serve
 Restart=on-failure
 RestartSec=2
 Environment=PI_PACKED_IDLE_SECS=0
-NoNewPrivileges=true
+${piEnv}NoNewPrivileges=true
 
 [Install]
 WantedBy=default.target
