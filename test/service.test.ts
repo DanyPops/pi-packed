@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp, type Deps } from "../src/service.ts";
@@ -170,6 +170,46 @@ describe("service app", () => {
 		const res = await app.fetch(new Request("http://x/updates", { headers: auth }));
 		expect(res.status).toBe(200);
 		expect((await res.json() as any).updates[0].latest).toBe("2");
+	});
+
+	it("GET /installed lists packages from pi settings", async () => {
+		const piHome = mkdtempSync(join(tmpdir(), "packed-pi-"));
+		writeFileSync(
+			join(piHome, "settings.json"),
+			JSON.stringify({ packages: ["npm:pi-extension-manager@0.8.2", { source: "npm:obj@2.0.0" }] }),
+		);
+		const d = deps({ piHome });
+		const app = createApp(d);
+		const res = await app.fetch(new Request("http://x/installed", { headers: auth }));
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as any;
+		expect(body.map((p: { name: string }) => p.name)).toEqual(["pi-extension-manager", "obj"]);
+	});
+
+	it("POST /remove validates bare names and reports in-band", async () => {
+		const inst = new FakeInstaller();
+		const app = createApp(deps({ inst }));
+		for (const name of ["npm:foo", "foo; rm -rf ~", ""]) {
+			const res = await app.fetch(
+				new Request("http://x/remove", {
+					method: "POST",
+					headers: { ...auth, "content-type": "application/json" },
+					body: JSON.stringify({ name }),
+				}),
+			);
+			expect(res.status).toBe(400);
+		}
+		expect(inst.removed).toBe("");
+
+		const res = await app.fetch(
+			new Request("http://x/remove", {
+				method: "POST",
+				headers: { ...auth, "content-type": "application/json" },
+				body: JSON.stringify({ name: "pi-lsp" }),
+			}),
+		);
+		expect(res.status).toBe(200);
+		expect(inst.removed).toBe("npm:pi-lsp");
 	});
 
 	it("GET /catalog serves the SQLite mirror", async () => {

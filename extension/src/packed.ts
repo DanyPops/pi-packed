@@ -1,90 +1,79 @@
 /**
- * packed.ts — the ONLY place the seam touches the service side.
- * Thin exec wrapper: every call is `bun <pi-packed>/src/cli.ts <cmd>`.
- * No registry, daemon, or npm knowledge lives here.
+ * packed.ts — native library client. The seam imports the pi-packed service
+ * modules IN-PROCESS (web-spider's pattern: dynamic import() bypasses jiti's
+ * CJS interop, which can drop class constructors for "type":"module" packages).
+ *
+ * The SQLite mirror is the shared substrate (WAL: the daemon writes, we read
+ * concurrently). The daemon remains the background producer; the seam works
+ * even with the daemon down. No subprocess, no token/port files.
  */
-import { execFile } from "node:child_process";
+import type { Db } from "../../src/db.ts";
+import type { InstalledPkg, Pkg, PkgInfo, UpdateEntry } from "../../src/ports.ts";
 
-export interface InstalledPkg {
-	name: string;
-	pinned?: string;
-	installed?: string;
-}
-
-export interface UpdateEntry {
-	name: string;
-	installed: string;
-	latest: string;
-	detectedAt?: string;
-}
-
-export interface UpdatesSnapshot {
-	checkedAt?: string;
-	updates: UpdateEntry[];
-}
-
-export interface SearchResult {
-	name: string;
-	version: string;
-	description?: string;
-	date?: string;
-}
-
+export type { InstalledPkg, UpdateEntry };
+export type PackageInfo = PkgInfo;
 export interface SearchResponse {
 	query: string;
 	total: number;
-	results: SearchResult[];
+	results: Pkg[];
 }
 
-export interface PackageInfo {
-	name: string;
-	version: string;
-	description?: string;
-	homepage?: string;
-	repository?: string;
-	license?: string;
-	keywords?: string[];
-	pi?: Record<string, unknown>;
-	modified?: string;
-	unpackedSize?: number;
+export interface Natives {
+	search(query: string, limit: number): Promise<SearchResponse>;
+	searchOffline(query: string, limit: number): Promise<SearchResponse>;
+	info(name: string): Promise<PackageInfo>;
+	installed(): Promise<InstalledPkg[]>;
+	updates(): Promise<UpdateEntry[]>;
+	install(source: string): Promise<string>;
+	remove(name: string): Promise<string>;
 }
 
-/** Path to the pi-packed CLI entry (resolved relative to this file). */
-export function cliPath(): string {
-	if (process.env["PACKED_CLI"]) return process.env["PACKED_CLI"];
-	return new URL("../../src/cli.ts", import.meta.url).pathname;
-}
+export async function createNatives(): Promise<Natives> {
+	const [dbMod, regMod, instMod, watchMod, execMod, stateMod, portsMod] = await Promise.all([
+		import("../../src/db.ts"),
+		import("../../src/registry.ts"),
+		import("../../src/installed.ts"),
+		import("../../src/watcher.ts"),
+		import("../../src/install.ts"),
+		import("../../src/state.ts"),
+		import("../../src/ports.ts"),
+	]);
 
-export function packedCmd(): { bin: string; prefix: string[] } {
-	if (process.env["PACKED_BIN"]) return { bin: process.env["PACKED_BIN"], prefix: [] };
-	return { bin: process.env["PACKED_BUN"] ?? "bun", prefix: [cliPath()] };
-}
+	const reg = new regMod.HttpRegistry();
+	const inst = new execMod.ExecInstaller();
 
-function exec(cmd: string, args: string[], timeoutMs: number): Promise<{ stdout: string; stderr: string }> {
-	return new Promise((resolve, reject) => {
-		execFile(cmd, args, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
-			if (err) {
-				reject(new Error(stderr?.trim() || err.message));
-				return;
-			}
-			resolve({ stdout, stderr });
-		});
-	});
-}
-
-export async function runPacked<T>(args: string[], timeoutMs = 15_000): Promise<T> {
-	const { bin, prefix } = packedCmd();
-	const { stdout } = await exec(bin, [...prefix, ...args, "--json"], timeoutMs);
-	try {
-		return JSON.parse(stdout) as T;
-	} catch {
-		throw new Error(`packed ${args[0]}: invalid JSON: ${stdout.slice(0, 200)}`);
+	// Per-call open/close: lifecycle-clean (no held handles, safe with the
+	// daemon writing concurrently under WAL).
+	function withDb<T>(fn: (db: Db) => T): T {
+		const db = dbMod.openDb(dbMod.dbPath(stateMod.stateDir()));
+		try {
+			return fn(db);
+		} finally {
+			db.close();
+		}
 	}
-}
 
-/** Text output variant for install/remove (human-readable pi output). */
-export async function runPackedText(args: string[], timeoutMs = 180_000): Promise<string> {
-	const { bin, prefix } = packedCmd();
-	const { stdout, stderr } = await exec(bin, [...prefix, ...args], timeoutMs);
-	return [stdout.trim(), stderr.trim()].filter(Boolean).join("\n");
+	return {
+		async search(query, limit) {
+			const { results, total } = await reg.search(portsMod.buildSearchQuery(query), limit);
+			return { query, total, results };
+		},
+		async searchOffline(query, limit) {
+			const results = withDb((db) => dbMod.searchLocal(db, query, limit));
+			return { query, total: results.length, results };
+		},
+		info: (name) => reg.info(name),
+		installed: () => Promise.resolve(instMod.readInstalledPackages(instMod.defaultPiHome())),
+		updates: () =>
+			Promise.resolve(
+				withDb((db) =>
+					watchMod.checkUpdates(
+						(name) => dbMod.latestVersion(db, name),
+						instMod.readInstalledPackages(instMod.defaultPiHome()),
+					),
+				),
+			),
+		install: (source) => inst.install(source),
+		remove: (name) => inst.remove(`npm:${name}`),
+	};
 }

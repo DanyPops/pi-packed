@@ -3,8 +3,48 @@
  * Master-index role: sync_meta (source, time, count, payload checksum —
  * the APT Release / repomd.xml analog). Payload: packages + FTS5 mirror.
  */
-import { Database } from "bun:sqlite";
+// Runtime-detected SQLite backend: bun:sqlite under Bun (CLI, daemon),
+// node:sqlite under Node ≥22.5 (pi's extension host — jiti runs on Node).
+// Both share the better-sqlite3 API shape; transactions are done manually
+// because node:sqlite has no .transaction() helper.
+import { createRequire } from "node:module";
 import { mkdirSync } from "node:fs";
+
+const require_ = createRequire(import.meta.url);
+const IS_BUN = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
+const backend = IS_BUN
+	? (require_("bun:sqlite") as typeof import("bun:sqlite"))
+	: (require_("node:sqlite") as unknown as typeof import("bun:sqlite"));
+
+// Constructor + options differ: bun:sqlite exports Database({create}),
+// node:sqlite exports DatabaseSync (creates by default).
+const DatabaseCtor = (
+	"DatabaseSync" in backend ? (backend as { DatabaseSync: unknown }).DatabaseSync : backend.Database
+) as new (path: string, opts?: { create?: boolean }) => Db;
+
+export interface DbStatement {
+	run(...params: unknown[]): { lastInsertRowid: number | bigint };
+	get(...params: unknown[]): unknown;
+	all(...params: unknown[]): unknown[];
+}
+
+export interface Db {
+	exec(sql: string): unknown;
+	prepare(sql: string): DbStatement;
+	close(): void;
+}
+
+function inTransaction<T>(db: Db, fn: () => T): T {
+	db.exec("BEGIN");
+	try {
+		const result = fn();
+		db.exec("COMMIT");
+		return result;
+	} catch (e) {
+		db.exec("ROLLBACK");
+		throw e;
+	}
+}
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import type { Pkg } from "./ports.ts";
@@ -21,9 +61,9 @@ export function dbPath(dir: string): string {
 	return join(dir, DB_FILE);
 }
 
-export function openDb(path: string): Database {
+export function openDb(path: string): Db {
 	if (path !== ":memory:") mkdirSync(join(path, ".."), { recursive: true });
-	const db = new Database(path, { create: true });
+	const db = IS_BUN ? new DatabaseCtor(path, { create: true }) : new DatabaseCtor(path);
 	db.exec("PRAGMA journal_mode = WAL");
 	db.exec(`CREATE TABLE IF NOT EXISTS packages (
 		name TEXT PRIMARY KEY,
@@ -54,7 +94,7 @@ function payloadHash(pkgs: Pkg[]): string {
 }
 
 /** Atomic full-catalog replace (the mirror write side of `apt update`). */
-export function replaceAll(db: Database, pkgs: Pkg[], source: string): SyncMeta {
+export function replaceAll(db: Db, pkgs: Pkg[], source: string): SyncMeta {
 	const meta: SyncMeta = {
 		source,
 		fetchedAt: new Date().toISOString(),
@@ -65,7 +105,7 @@ export function replaceAll(db: Database, pkgs: Pkg[], source: string): SyncMeta 
 	// pages and a package can appear twice in one sync (rowid reuse is fine).
 	const insert = db.prepare("INSERT OR REPLACE INTO packages (name, version, description, date) VALUES (?, ?, ?, ?)");
 	const insertFts = db.prepare("INSERT INTO packages_fts (rowid, name, description) VALUES (?, ?, ?)");
-	db.transaction(() => {
+	inTransaction(db, () => {
 		db.exec("DELETE FROM packages");
 		db.exec("DELETE FROM packages_fts");
 		for (const p of pkgs) {
@@ -77,32 +117,32 @@ export function replaceAll(db: Database, pkgs: Pkg[], source: string): SyncMeta 
 				"ON CONFLICT(id) DO UPDATE SET source=excluded.source, fetched_at=excluded.fetched_at, " +
 				"package_count=excluded.package_count, sha256=excluded.sha256",
 		).run(meta.source, meta.fetchedAt, meta.packageCount, meta.sha256);
-	})();
+	});
 	return meta;
 }
 
-export function getSyncMeta(db: Database): SyncMeta | undefined {
+export function getSyncMeta(db: Db): SyncMeta | undefined {
 	return db
-		.query("SELECT source, fetched_at AS fetchedAt, package_count AS packageCount, sha256 FROM sync_meta WHERE id = 1")
+		.prepare("SELECT source, fetched_at AS fetchedAt, package_count AS packageCount, sha256 FROM sync_meta WHERE id = 1")
 		.get() as SyncMeta | undefined;
 }
 
-export function catalogList(db: Database, limit = 0, offset = 0): Pkg[] {
+export function catalogList(db: Db, limit = 0, offset = 0): Pkg[] {
 	const sql =
 		"SELECT name, version, description, date FROM packages ORDER BY name" +
 		(limit > 0 ? ` LIMIT ${Math.floor(limit)} OFFSET ${Math.floor(offset)}` : "");
-	return db.query(sql).all() as Pkg[];
+	return db.prepare(sql).all() as Pkg[];
 }
 
 /** FTS5 over the mirror (the `apt-cache search` analog). Sanitizes user
  * input into AND-joined quoted terms; falls back to LIKE for hostile input. */
-export function searchLocal(db: Database, q: string, limit = 50): Pkg[] {
+export function searchLocal(db: Db, q: string, limit = 50): Pkg[] {
 	const terms = q.trim().split(/\s+/).filter(Boolean);
 	if (terms.length === 0) return [];
 	try {
 		const match = terms.map((t) => `"${t.replaceAll('"', '""')}"*`).join(" ");
 		return db
-			.query(
+			.prepare(
 				`SELECT p.name, p.version, p.description, p.date
 				 FROM packages_fts f JOIN packages p ON p.rowid = f.rowid
 				 WHERE packages_fts MATCH ? ORDER BY rank LIMIT ?`,
@@ -112,13 +152,13 @@ export function searchLocal(db: Database, q: string, limit = 50): Pkg[] {
 		// FTS syntax hostility → substring fallback
 		const like = `%${q}%`;
 		return db
-			.query("SELECT name, version, description, date FROM packages WHERE name LIKE ? OR description LIKE ? ORDER BY name LIMIT ?")
+			.prepare("SELECT name, version, description, date FROM packages WHERE name LIKE ? OR description LIKE ? ORDER BY name LIMIT ?")
 			.all(like, like, limit) as Pkg[];
 	}
 }
 
 /** Latest mirrored version of one package (watcher's lookup). */
-export function latestVersion(db: Database, name: string): string | undefined {
-	const row = db.query("SELECT version FROM packages WHERE name = ?").get(name) as { version: string } | null;
+export function latestVersion(db: Db, name: string): string | undefined {
+	const row = db.prepare("SELECT version FROM packages WHERE name = ?").get(name) as { version: string } | null;
 	return row?.version;
 }

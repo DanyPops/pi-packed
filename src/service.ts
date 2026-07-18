@@ -7,6 +7,7 @@ import { buildSearchQuery, clampLimit } from "./ports.ts";
 import type { Installer, Registry } from "./ports.ts";
 import { TTLCache } from "./cache.ts";
 import { loadUpdates } from "./watcher.ts";
+import { readInstalledPackages, defaultPiHome } from "./installed.ts";
 import { openDb, searchLocal, catalogList, getSyncMeta, dbPath } from "./db.ts";
 import { VERSION, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT } from "./constants.ts";
 import { createLogger } from "./log.ts";
@@ -18,10 +19,12 @@ export interface Deps {
 	inst: Installer;
 	token: string;
 	stateDir: string;
+	piHome?: string;
 	cache?: TTLCache;
 }
 
 const SOURCE_RE = /^(npm:[A-Za-z0-9@._/-]+|git:[A-Za-z0-9@:._/-]+|https:\/\/[A-Za-z0-9@:._/?=&%~-]+)$/;
+const NAME_RE = /^(@[A-Za-z0-9._-]+\/)?[A-Za-z0-9._-]+$/;
 
 function json(v: unknown, init?: ResponseInit): Response {
 	return Response.json(v, init);
@@ -70,6 +73,29 @@ export function createApp(deps: Deps): { fetch: (req: Request) => Promise<Respon
 				return json(await deps.reg.info(name));
 			} catch (e) {
 				return err(502, e instanceof Error ? e.message : String(e));
+			}
+		}
+
+		if (path === "/installed" && req.method === "GET") {
+			return json(readInstalledPackages(deps.piHome ?? defaultPiHome()));
+		}
+
+		if (path === "/remove" && req.method === "POST") {
+			let name = "";
+			try {
+				const body = (await req.json()) as { name?: unknown };
+				name = String(body.name ?? "");
+			} catch {
+				/* fall through to validation */
+			}
+			if (!NAME_RE.test(name)) {
+				return err(400, "invalid name; want a bare npm package name");
+			}
+			try {
+				const output = await deps.inst.remove(`npm:${name}`);
+				return json({ ok: true, name, output });
+			} catch (e) {
+				return json({ ok: false, name, output: e instanceof Error ? e.message : String(e) });
 			}
 		}
 

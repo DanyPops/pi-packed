@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach } from "bun:test";
+import { describe, it, expect } from "bun:test";
 import { mergeRows, filterRows, visibleRows, nextMode, formatUpdateNotice } from "../extension/src/model.ts";
 
 describe("model (seam)", () => {
@@ -50,43 +50,59 @@ describe("model (seam)", () => {
 	});
 });
 
-// packed.ts exec wrapper — child_process mocked.
-let execBehavior: { stdout?: string; stderr?: string; fail?: boolean };
-mock.module("node:child_process", () => ({
-	execFile: (_cmd: string, _args: string[], _opts: unknown, cb: (e: Error | null, so: string, se: string) => void) => {
-		if (execBehavior.fail) cb(new Error("spawn failed"), "", execBehavior.stderr ?? "");
-		else cb(null, execBehavior.stdout ?? "{}", execBehavior.stderr ?? "");
-	},
-}));
+// packed.ts native client — temp env + real SQLite mirror.
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { openDb, replaceAll, dbPath } from "../src/db.ts";
+import { createNatives } from "../extension/src/packed.ts";
+import type { Pkg } from "../src/ports.ts";
 
-describe("packed (seam exec wrapper)", () => {
-	beforeEach(() => {
-		execBehavior = {};
+const savedEnv = { home: process.env["PI_PACKED_HOME"], pi: process.env["PI_PACKED_PI_HOME"] };
+function restoreEnv(): void {
+	if (savedEnv.home === undefined) delete process.env["PI_PACKED_HOME"];
+	else process.env["PI_PACKED_HOME"] = savedEnv.home;
+	if (savedEnv.pi === undefined) delete process.env["PI_PACKED_PI_HOME"];
+	else process.env["PI_PACKED_PI_HOME"] = savedEnv.pi;
+}
+
+describe("packed natives (in-process)", () => {
+	function setupEnv(pkgs: Pkg[]) {
+		const stateDir = mkdtempSync(join(tmpdir(), "packed-seam-"));
+		const piHome = mkdtempSync(join(tmpdir(), "packed-seam-pi-"));
+		writeFileSync(
+			join(piHome, "settings.json"),
+			JSON.stringify({ packages: ["npm:pi-extension-manager@0.8.2"] }),
+		);
+		const db = openDb(dbPath(stateDir));
+		replaceAll(db, pkgs, "test");
+		db.close();
+		process.env["PI_PACKED_HOME"] = stateDir;
+		process.env["PI_PACKED_PI_HOME"] = piHome;
+	}
+
+	it("updates() computes drift from the mirror, in-process", async () => {
+		setupEnv([{ name: "pi-extension-manager", version: "0.9.0" }]);
+		const natives = await createNatives();
+		const updates = await natives.updates();
+		expect(updates).toHaveLength(1);
+		expect(updates[0]).toMatchObject({ name: "pi-extension-manager", installed: "0.8.2", latest: "0.9.0" });
+		restoreEnv();
 	});
 
-	it("runPacked parses JSON output", async () => {
-		execBehavior.stdout = '{"total":1,"results":[]}';
-		const { runPacked } = await import("../extension/src/packed.ts");
-		const r = await runPacked<{ total: number }>(["search", "x"]);
-		expect(r.total).toBe(1);
+	it("installed() reads pi settings, in-process", async () => {
+		setupEnv([]);
+		const natives = await createNatives();
+		const installed = await natives.installed();
+		expect(installed).toEqual([{ name: "pi-extension-manager", pinned: "0.8.2", installed: undefined }]);
+		restoreEnv();
 	});
 
-	it("runPacked rejects invalid JSON with context", async () => {
-		execBehavior.stdout = "not json at all";
-		const { runPacked } = await import("../extension/src/packed.ts");
-		expect(runPacked(["search", "x"])).rejects.toThrow(/invalid JSON/);
-	});
-
-	it("runPackedText returns combined output", async () => {
-		execBehavior.stdout = "Installed npm:foo";
-		const { runPackedText } = await import("../extension/src/packed.ts");
-		expect(await runPackedText(["install", "npm:foo"])).toBe("Installed npm:foo");
-	});
-
-	it("cliPath honors PACKED_CLI override", async () => {
-		process.env["PACKED_CLI"] = "/custom/cli.ts";
-		const { cliPath } = await import("../extension/src/packed.ts");
-		expect(cliPath()).toBe("/custom/cli.ts");
-		delete process.env["PACKED_CLI"];
+	it("searchOffline() queries the mirror via FTS", async () => {
+		setupEnv([{ name: "pi-lsp", version: "1", description: "LSP tools" }]);
+		const natives = await createNatives();
+		const r = await natives.searchOffline("lsp", 10);
+		expect(r.results.map((p) => p.name)).toEqual(["pi-lsp"]);
+		restoreEnv();
 	});
 });

@@ -9,33 +9,32 @@ import { DynamicBorder, rawKeyHint } from "@earendil-works/pi-coding-agent";
 import { Container, Input, Spacer, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { filterRows, mergeRows, nextMode, visibleRows } from "./model.js";
 import type { Row, ViewMode } from "./model.js";
-import { runPacked, runPackedText } from "./packed.js";
-import type { InstalledPkg, UpdatesSnapshot } from "./packed.js";
+import type { Natives } from "./packed.js";
 
 interface PanelAction {
 	type: "menu" | "refresh";
 	row?: Row;
 }
 
-async function loadRows(): Promise<{ rows: Row[]; error?: string }> {
+async function loadRows(natives: Natives): Promise<{ rows: Row[]; error?: string }> {
 	try {
-		const [installed, snap] = await Promise.all([
-			runPacked<InstalledPkg[]>(["installed"]),
-			runPacked<UpdatesSnapshot>(["updates", "--cached"], 5_000).catch(() => ({ updates: [] }) as UpdatesSnapshot),
+		const [installed, updates] = await Promise.all([
+			natives.installed(),
+			natives.updates().catch(() => []),
 		]);
-		return { rows: mergeRows(installed, snap.updates ?? []) };
+		return { rows: mergeRows(installed, updates) };
 	} catch (e) {
 		return { rows: [], error: e instanceof Error ? e.message : String(e) };
 	}
 }
 
-export async function showPackages(ctx: ExtensionCommandContext): Promise<void> {
+export async function showPackages(ctx: ExtensionCommandContext, natives: Natives): Promise<void> {
 	if (!ctx.hasUI) {
 		ctx.ui.notify("/packages requires interactive mode", "warning");
 		return;
 	}
 
-	let { rows, error } = await loadRows();
+	let { rows, error } = await loadRows(natives);
 	if (error) {
 		ctx.ui.notify(`packed unavailable: ${error}`, "error");
 		return;
@@ -47,7 +46,7 @@ export async function showPackages(ctx: ExtensionCommandContext): Promise<void> 
 		if (!action) return; // closed
 
 		if (action.type === "refresh") {
-			({ rows, error } = await loadRows());
+			({ rows, error } = await loadRows(natives));
 			if (error) ctx.ui.notify(`refresh failed: ${error}`, "error");
 			continue;
 		}
@@ -67,7 +66,7 @@ export async function showPackages(ctx: ExtensionCommandContext): Promise<void> 
 		if (choice?.startsWith("Update")) {
 			ctx.ui.notify(`Updating ${row.name}…`, "info");
 			try {
-				await runPackedText(["install", `npm:${row.name}@${row.latest}`]);
+				await natives.install(`npm:${row.name}@${row.latest}`);
 				ctx.ui.notify(`Updated ${row.name} to ${row.latest} (takes effect after /reload)`, "info");
 				row.version = row.latest ?? row.version;
 				row.hasUpdate = false;
@@ -78,7 +77,7 @@ export async function showPackages(ctx: ExtensionCommandContext): Promise<void> 
 			const sure = await ctx.ui.confirm("Remove package", `pi remove npm:${row.name}?`);
 			if (sure) {
 				try {
-					await runPackedText(["remove", row.name]);
+					await natives.remove(row.name);
 					ctx.ui.notify(`Removed ${row.name}`, "info");
 					rows = rows.filter((r) => r.name !== row.name);
 				} catch (e) {

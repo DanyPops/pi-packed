@@ -11,31 +11,32 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerTools } from "./tools.js";
 import { showPackages } from "./tui.js";
-import { runPacked } from "./packed.js";
+import { createNatives } from "./packed.js";
 import { formatUpdateNotice } from "./model.js";
-import type { UpdatesSnapshot } from "./packed.js";
 
-export default function (pi: ExtensionAPI) {
-	registerTools(pi);
+// Async factory (pi awaits it): dynamic imports load the service library
+// in-process — the native pattern, no subprocess.
+export default async function (pi: ExtensionAPI) {
+	const natives = await createNatives();
+	registerTools(pi, natives);
 
 	pi.registerCommand("packages", {
 		description: "Browse and manage installed Pi packages (pi-packed)",
 		handler: async (_args, ctx) => {
-			await showPackages(ctx);
+			await showPackages(ctx, natives);
 		},
 	});
 
-	// The watcher (daemon side) produces the snapshot; the seam consumes it
-	// on Pi's own lifecycle event — that's the whole event-driven story.
+	// Update check against the local mirror, on Pi's own lifecycle event.
 	pi.on("session_start", async (_event, ctx) => {
 		if (!ctx.hasUI) return;
 		try {
-			const snap = await runPacked<UpdatesSnapshot>(["updates", "--cached"], 3_000);
-			if (snap.updates?.length) {
-				ctx.ui.notify(`${formatUpdateNotice(snap.updates)} — /packages to review`, "info");
+			const updates = await natives.updates();
+			if (updates.length) {
+				ctx.ui.notify(`${formatUpdateNotice(updates)} — /packages to review`, "info");
 			}
 		} catch {
-			// packed missing or daemon down — stay silent, never block startup.
+			// mirror missing or unreadable — stay silent, never block startup.
 		}
 	});
 }

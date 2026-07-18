@@ -53,7 +53,7 @@ export interface UpdateEntry {
 	name: string;
 	installed: string;
 	latest: string;
-	detectedAt: string;
+	detectedAt?: string;
 }
 
 export interface UpdatesSnapshot {

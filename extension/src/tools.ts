@@ -4,14 +4,13 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { runPacked, runPackedText } from "./packed.js";
-import type { PackageInfo, SearchResponse } from "./packed.js";
+import type { Natives } from "./packed.js";
 
 function text(t: string, details: Record<string, unknown> = {}) {
 	return { content: [{ type: "text" as const, text: t }], details };
 }
 
-export function registerTools(pi: ExtensionAPI): void {
+export function registerTools(pi: ExtensionAPI, natives: Natives): void {
 	pi.registerTool({
 		name: "pkg_search",
 		label: "Pi Package Search",
@@ -24,9 +23,7 @@ export function registerTools(pi: ExtensionAPI): void {
 		}),
 		async execute(_id, params, _signal, _onUpdate, _ctx) {
 			try {
-				const r = await runPacked<SearchResponse>(
-					["search", params.query, "--limit", String(params.limit ?? 10)],
-				);
+				const r = await natives.search(params.query, params.limit ?? 10);
 				if (r.results.length === 0) return text(`No Pi packages found for "${params.query}".`);
 				const lines = r.results.map(
 					(p, i) => `${i + 1}. ${p.name}@${p.version}\n   ${p.description ?? ""}`,
@@ -52,7 +49,7 @@ export function registerTools(pi: ExtensionAPI): void {
 		}),
 		async execute(_id, params, _signal, _onUpdate, _ctx) {
 			try {
-				const info = await runPacked<PackageInfo>(["info", params.name]);
+				const info = await natives.info(params.name);
 				const lines = [
 					`${info.name}@${info.version}`,
 					info.description ?? "",
@@ -88,7 +85,7 @@ export function registerTools(pi: ExtensionAPI): void {
 			);
 			if (!ok) return text("Install cancelled by user.");
 			try {
-				const out = await runPackedText(["install", params.source]);
+				const out = await natives.install(params.source);
 				return text(out || `Installed ${params.source}. Reload with /reload to activate.`);
 			} catch (e) {
 				return text(`install failed: ${e instanceof Error ? e.message : e}`);
