@@ -1,0 +1,34 @@
+name: Publish Package
+
+# Trusted publishing (OIDC): no long-lived npm tokens. npm CLI detects the
+# OIDC environment automatically (requires npm >= 11.5.1). Configure the
+# trusted publisher on npmjs.com: org=DanyPops repo=pi-packed workflow=publish.yml
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  id-token: write # Required for OIDC
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: oven-sh/setup-bun@v2
+
+      - run: bun install
+      - run: bun test
+
+      # npm CLI only for the publish step (trusted publishing needs >= 11.5.1)
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - run: npm publish --access public
