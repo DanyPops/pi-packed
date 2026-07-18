@@ -24,11 +24,13 @@ jobs:
       - run: bun install
       - run: bun test
 
-      # npm CLI only for the publish step (trusted publishing needs >= 11.5.1)
+      # npm CLI only for the publish step (trusted publishing needs >= 11.5.1).
+      # NO registry-url here: it makes setup-node write an .npmrc with an empty
+      # NODE_AUTH_TOKEN line, which shadows OIDC auto-detection and breaks
+      # trusted publishing with a 404.
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
-          registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
 
       - run: npm publish --access public
