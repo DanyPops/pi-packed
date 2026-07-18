@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp, type Deps } from "../src/service.ts";
 import { saveUpdates } from "../src/watcher.ts";
-import { saveCatalog } from "../src/catalog.ts";
+import { openDb, replaceAll, dbPath } from "../src/db.ts";
 import type { Installer, Pkg, PkgInfo, Registry, SearchPage } from "../src/ports.ts";
 
 class FakeRegistry implements Registry {
@@ -172,15 +172,29 @@ describe("service app", () => {
 		expect((await res.json() as any).updates[0].latest).toBe("2");
 	});
 
-	it("GET /catalog serves the sync snapshot", async () => {
+	it("GET /catalog serves the SQLite mirror", async () => {
 		const d = deps();
-		await saveCatalog(d.stateDir, {
-			fetchedAt: new Date().toISOString(),
-			packages: [{ name: "a", version: "1" }],
-		});
+		const db = openDb(dbPath(d.stateDir));
+		replaceAll(db, [{ name: "a", version: "1" }], "test");
+		db.close();
 		const app = createApp(d);
 		const res = await app.fetch(new Request("http://x/catalog", { headers: auth }));
 		expect(res.status).toBe(200);
-		expect((await res.json() as any).packages[0].name).toBe("a");
+		const body = await res.json() as any;
+		expect(body.packages[0].name).toBe("a");
+		expect(body.sha256).toMatch(/^[0-9a-f]{64}$/);
+	});
+
+	it("GET /search?offline=1 queries the mirror", async () => {
+		const d = deps();
+		const db = openDb(dbPath(d.stateDir));
+		replaceAll(db, [{ name: "pi-lsp", version: "1", description: "LSP tools" }], "test");
+		db.close();
+		const app = createApp(d);
+		const res = await app.fetch(new Request("http://x/search?q=lsp&offline=1", { headers: auth }));
+		expect(res.status).toBe(200);
+		const body = await res.json() as any;
+		expect(body.offline).toBe(true);
+		expect(body.results[0].name).toBe("pi-lsp");
 	});
 });

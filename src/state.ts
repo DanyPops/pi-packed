@@ -2,10 +2,12 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { ENV, TOKEN_FILE, PORT_FILE } from "./constants.ts";
 import { randomBytes } from "node:crypto";
 
 export function stateDir(): string {
-	if (process.env["PI_PACKED_HOME"]) return process.env["PI_PACKED_HOME"];
+	const envHome = process.env[ENV.HOME];
+	if (envHome) return envHome;
 	try {
 		return join(homedir(), ".cache", "pi-packed");
 	} catch {
@@ -14,7 +16,7 @@ export function stateDir(): string {
 }
 
 export function loadOrCreateToken(dir: string): string {
-	const path = join(dir, "token");
+	const path = join(dir, TOKEN_FILE);
 	try {
 		const tok = readFileSync(path, "utf8").trim();
 		if (tok) return tok;
@@ -29,7 +31,7 @@ export function loadOrCreateToken(dir: string): string {
 
 export function writePort(dir: string, port: number): void {
 	mkdirSync(dir, { recursive: true });
-	writeFileSync(join(dir, "port"), String(port) + "\n", { mode: 0o600 });
+	writeFileSync(join(dir, PORT_FILE), String(port) + "\n", { mode: 0o600 });
 }
 
 export function idleExpired(lastActiveMs: number, nowMs: number, budgetMs: number): boolean {

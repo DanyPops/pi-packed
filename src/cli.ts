@@ -7,20 +7,25 @@
 import { buildSearchQuery, clampLimit } from "./ports.ts";
 import type { Installer, Registry } from "./ports.ts";
 import { readInstalledPackages } from "./installed.ts";
-import { checkUpdates, loadUpdates } from "./watcher.ts";
-import { loadCatalog } from "./catalog.ts";
+import { checkUpdates } from "./watcher.ts";
+import { syncCatalog } from "./catalog.ts";
+import { openDb, searchLocal, catalogList, getSyncMeta, latestVersion, dbPath } from "./db.ts";
 import { NAME_RE } from "./install.ts";
+import {
+	VERSION, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, NPM_REGISTRY_BASE, SEARCH_PAGE_SIZE, MIRROR_PAGE_DELAY_MS,
+} from "./constants.ts";
 
 const SOURCE_RE = /^(npm:[A-Za-z0-9@._/-]+|git:[A-Za-z0-9@:._/-]+|https:\/\/[A-Za-z0-9@:._/?=&%~-]+)$/;
 
 const USAGE = `packed — package service for the Pi agent
 
 usage:
-  packed search <query> [--limit N] [--json]   search pi packages on npm
+  packed search <query> [--offline] [--json]   search npm (or the local mirror with --offline)
   packed info <name> [--json]                  package details
-  packed updates [--cached] [--json]           available updates (cached = daemon snapshot)
+  packed updates [--json]                      updates per the local mirror
+  packed mirror [--json]                       sync upstream into the local SQLite index
   packed installed [--json]                    installed pi packages
-  packed catalog [--json]                      full pi-package catalog snapshot
+  packed catalog [--json]                      local package index (apt-cache stats)
   packed install <source>                      pi install npm:|git:|https://…
   packed remove <name>                         remove by bare npm name
   packed serve                                 run the long-running daemon
@@ -46,17 +51,19 @@ interface Flags {
 	json: boolean;
 	limit: number;
 	cached: boolean;
+	offline: boolean;
 }
 
 function parseFlags(rest: string[]): { flags: Flags; pos: string[] } {
-	const flags: Flags = { json: false, limit: 10, cached: false };
+	const flags: Flags = { json: false, limit: SEARCH_DEFAULT_LIMIT, cached: false, offline: false };
 	const pos: string[] = [];
 	for (let i = 0; i < rest.length; i++) {
 		const a = rest[i]!;
 		if (a === "--json") flags.json = true;
 		else if (a === "--cached") flags.cached = true;
-		else if (a === "--limit" && i + 1 < rest.length) flags.limit = Number(rest[++i]) || 10;
-		else if (a.startsWith("--limit=")) flags.limit = Number(a.slice(8)) || 10;
+		else if (a === "--offline") flags.offline = true;
+		else if (a === "--limit" && i + 1 < rest.length) flags.limit = Number(rest[++i]) || SEARCH_DEFAULT_LIMIT;
+		else if (a.startsWith("--limit=")) flags.limit = Number(a.slice(8)) || SEARCH_DEFAULT_LIMIT;
 		else pos.push(a);
 	}
 	return { flags, pos };
@@ -70,16 +77,40 @@ const usageErr = (out: string): CliResult => ({ code: 2, out });
 
 const commands: Record<string, { usage: string; run: Command }> = {
 	search: {
-		usage: "packed search <query> [--limit N] [--json]",
+		usage: "packed search <query> [--offline] [--limit N] [--json]",
 		async run(_rest, d, flags, pos) {
 			const q = pos[0];
 			if (!q) return usageErr(`usage: ${commands["search"]!.usage}\n`);
-			const { results, total } = await d.reg.search(buildSearchQuery(q), clampLimit(flags.limit, 10, 50));
+			const limit = clampLimit(flags.limit, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT);
+			// --offline: query the SQLite mirror only (apt-cache search analog)
+			if (flags.offline) {
+				const db = openDb(dbPath(d.stateDir));
+				try {
+					const results = searchLocal(db, q, limit);
+					if (flags.json) return ok(JSON.stringify({ query: q, total: results.length, results, offline: true }) + "\n");
+					if (results.length === 0) return ok(`no mirrored packages match "${q}" (run: packed mirror)\n`);
+					let out = `${results.length} mirrored package(s):\n\n`;
+					for (const p of results) out += `  ${p.name}@${p.version}\n    ${p.description ?? ""}\n`;
+					return ok(out);
+				} finally {
+					db.close();
+				}
+			}
+			const { results, total } = await d.reg.search(buildSearchQuery(q), limit);
 			if (flags.json) return ok(JSON.stringify({ query: q, total, results }) + "\n");
 			if (results.length === 0) return ok(`no pi packages found for "${q}"\n`);
 			let out = `${total} package(s) (showing ${results.length}):\n\n`;
 			for (const p of results) out += `  ${p.name}@${p.version}\n    ${p.description ?? ""}\n`;
 			return ok(out);
+		},
+	},
+
+	mirror: {
+		usage: "packed mirror [--json]  (sync the upstream registry into the local SQLite index — the apt update analog)",
+		async run(_rest, d, flags) {
+			const n = await syncCatalog(d.reg, d.stateDir);
+			if (flags.json) return ok(JSON.stringify({ synced: n }) + "\n");
+			return ok(`mirrored ${n} packages into the local index\n`);
 		},
 	},
 
@@ -98,18 +129,19 @@ const commands: Record<string, { usage: string; run: Command }> = {
 	},
 
 	updates: {
-		usage: "packed updates [--cached] [--json]",
+		usage: "packed updates [--json]  (from the local mirror — run `packed mirror` first)",
 		async run(_rest, d, flags) {
+			const db = openDb(dbPath(d.stateDir));
 			let updates;
-			if (flags.cached) {
-				updates = (await loadUpdates(d.stateDir))?.updates ?? [];
-			} else {
-				updates = await checkUpdates(d.reg, readInstalledPackages(d.piHome));
+			try {
+				updates = checkUpdates((name) => latestVersion(db, name), readInstalledPackages(d.piHome));
+			} finally {
+				db.close();
 			}
 			if (flags.json) {
 				return ok(JSON.stringify({ checkedAt: new Date().toISOString(), updates }) + "\n");
 			}
-			if (updates.length === 0) return ok("all pi packages up to date\n");
+			if (updates.length === 0) return ok("all pi packages up to date (per the local mirror)\n");
 			let out = `${updates.length} update(s) available:\n\n`;
 			for (const u of updates) out += `  ${u.name}  ${u.installed} → ${u.latest}\n`;
 			return ok(out + "\nrun: pi update --extensions\n");
@@ -128,12 +160,21 @@ const commands: Record<string, { usage: string; run: Command }> = {
 	catalog: {
 		usage: "packed catalog [--json]",
 		async run(_rest, d, flags) {
-			const snap = await loadCatalog(d.stateDir);
-			const packages = snap?.packages ?? [];
-			if (flags.json) return ok(JSON.stringify(snap ?? { packages: [] }) + "\n");
-			let out = `${packages.length} packages in catalog (fetched ${snap?.fetchedAt ?? "never"})\n\n`;
-			for (const p of packages.slice(0, 50)) out += `  ${p.name}@${p.version}\n`;
-			return ok(out);
+			const db = openDb(dbPath(d.stateDir));
+			try {
+				const meta = getSyncMeta(db);
+				const packages = catalogList(db);
+				if (flags.json) {
+					return ok(JSON.stringify({ fetchedAt: meta?.fetchedAt, sha256: meta?.sha256, packages }) + "\n");
+				}
+				let out = `${packages.length} packages in the local index`;
+				if (meta) out += ` (synced ${meta.fetchedAt}, sha256:${meta.sha256.slice(0, 12)}…)`;
+				out += "\n\n";
+				for (const p of packages.slice(0, 50)) out += `  ${p.name}@${p.version}\n`;
+				return ok(out);
+			} finally {
+				db.close();
+			}
 		},
 	},
 
@@ -175,7 +216,7 @@ const commands: Record<string, { usage: string; run: Command }> = {
 	version: {
 		usage: "packed version",
 		async run() {
-			return ok("0.1.0\n");
+			return ok(VERSION + "\n");
 		},
 	},
 };
@@ -226,7 +267,11 @@ if (import.meta.main) {
 		const { resolveRegistry } = await import("./client.ts");
 		const { ExecInstaller } = await import("./install.ts");
 		const dir = stateDir();
-		const reg = await resolveRegistry(dir, "https://registry.npmjs.org");
+		// mirror talks to UPSTREAM, not the daemon cache — apt update semantics.
+		const reg =
+			args[0] === "mirror"
+				? new (await import("./registry.ts")).HttpRegistry(NPM_REGISTRY_BASE, SEARCH_PAGE_SIZE, MIRROR_PAGE_DELAY_MS)
+				: await resolveRegistry(dir, NPM_REGISTRY_BASE);
 		const { code, out } = await cliRun(args, {
 			reg,
 			inst: new ExecInstaller(),

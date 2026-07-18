@@ -5,10 +5,14 @@
  */
 import { writeFile, readFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { InstalledPkg, Registry, UpdateEntry, UpdatesSnapshot } from "./ports.ts";
+import { UPDATES_FILE } from "./constants.ts";
+import { createLogger } from "./log.ts";
+
+const log = createLogger("watcher");
+import type { InstalledPkg, UpdateEntry, UpdatesSnapshot } from "./ports.ts";
 
 function updatesPath(dir: string): string {
-	return join(dir, "updates.json");
+	return join(dir, UPDATES_FILE);
 }
 
 export async function saveUpdates(dir: string, snap: UpdatesSnapshot): Promise<void> {
@@ -24,20 +28,18 @@ export async function loadUpdates(dir: string): Promise<UpdatesSnapshot | undefi
 	}
 }
 
-/** Pure diff: drift = latest ≠ what we have (registry latest is authoritative). */
-export async function checkUpdates(reg: Registry, installed: InstalledPkg[]): Promise<UpdateEntry[]> {
+/** Pure diff against the local mirror (apt list --upgradable semantics):
+ * drift = mirrored latest ≠ what we have. The mirror is refreshed by
+ * catalogSync; updates are computed offline, exactly like APT. */
+export function checkUpdates(latestOf: (name: string) => string | undefined, installed: InstalledPkg[]): UpdateEntry[] {
 	const now = new Date().toISOString();
 	const updates: UpdateEntry[] = [];
 	for (const p of installed) {
 		const have = p.installed || p.pinned;
 		if (!have) continue;
-		try {
-			const info = await reg.info(p.name);
-			if (info.version && info.version !== have) {
-				updates.push({ name: p.name, installed: have, latest: info.version, detectedAt: now });
-			}
-		} catch (e) {
-			console.error(`updates: ${p.name}: ${e instanceof Error ? e.message : e}`);
+		const latest = latestOf(p.name);
+		if (latest && latest !== have) {
+			updates.push({ name: p.name, installed: have, latest, detectedAt: now });
 		}
 	}
 	return updates;
@@ -50,16 +52,16 @@ export interface WatcherOptions {
 
 /** Producer loop: immediate check, then on a timer. Returns a stop function. */
 export function startWatcher(
-	reg: Registry,
+	latestOf: (name: string) => string | undefined,
 	stateDir: string,
 	readInstalled: () => InstalledPkg[],
 	opts: WatcherOptions,
 ): () => void {
 	async function check(): Promise<void> {
 		try {
-			const updates = await checkUpdates(reg, readInstalled());
+			const updates = checkUpdates(latestOf, readInstalled());
 			await saveUpdates(stateDir, { checkedAt: new Date().toISOString(), updates });
-			if (updates.length > 0) console.error(`[packed] updates available: ${updates.length}`);
+			log.info("updates check", { updates: updates.length });
 		} catch (e) {
 			opts.onError?.(e);
 		}

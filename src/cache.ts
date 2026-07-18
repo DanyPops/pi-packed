@@ -1,7 +1,9 @@
 /** TTLCache — the smart-proxy concern, nothing more. */
+import { CACHE_TTL_MS } from "./constants.ts";
+
 export class TTLCache {
 	private m = new Map<string, { body: string; expires: number }>();
-	constructor(private ttlMs = 5 * 60_000) {}
+	constructor(private ttlMs = CACHE_TTL_MS) {}
 
 	get(key: string): string | undefined {
 		const e = this.m.get(key);

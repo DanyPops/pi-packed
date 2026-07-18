@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { ENV, SETTINGS_FILE } from "./constants.ts";
 import type { InstalledPkg } from "./ports.ts";
 
 export function splitNpmSource(spec: string): [name: string, version: string] {
@@ -32,7 +33,7 @@ function nodeModulesVersion(piHome: string, name: string): string | undefined {
 export function readInstalledPackages(piHome: string): InstalledPkg[] {
 	let settings: { packages?: unknown[] };
 	try {
-		settings = JSON.parse(readFileSync(join(piHome, "settings.json"), "utf8"));
+		settings = JSON.parse(readFileSync(join(piHome, SETTINGS_FILE), "utf8"));
 	} catch {
 		return [];
 	}
@@ -51,6 +52,7 @@ export function readInstalledPackages(piHome: string): InstalledPkg[] {
 }
 
 export function defaultPiHome(): string {
-	if (process.env["PI_PACKED_PI_HOME"]) return process.env["PI_PACKED_PI_HOME"];
+	const envHome = process.env[ENV.PI_HOME];
+	if (envHome) return envHome;
 	return join(homedir(), ".pi", "agent");
 }

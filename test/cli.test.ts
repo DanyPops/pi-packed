@@ -6,7 +6,7 @@ import { cliRun, type CliDeps } from "../src/cli.ts";
 import { DaemonRegistry, probe, resolveRegistry } from "../src/client.ts";
 import { createApp } from "../src/service.ts";
 import { saveUpdates } from "../src/watcher.ts";
-import { saveCatalog } from "../src/catalog.ts";
+import { openDb, replaceAll, dbPath, catalogList } from "../src/db.ts";
 import { HttpRegistry } from "../src/registry.ts";
 import type { Installer, Pkg, PkgInfo, Registry, SearchPage } from "../src/ports.ts";
 import type { Server } from "bun";
@@ -84,23 +84,47 @@ describe("CLI", () => {
 		expect(out).toContain('"pinned":"0.8.2"');
 	});
 
-	it("updates --cached reads snapshot, no registry calls", async () => {
+	it("updates computes drift from the local mirror", async () => {
 		const d = deps();
-		await saveUpdates(d.stateDir, {
-			checkedAt: new Date().toISOString(),
-			updates: [{ name: "a", installed: "1", latest: "2", detectedAt: "" }],
-		});
-		const { code, out } = await cliRun(["updates", "--cached", "--json"], d);
+		writeFileSync(join(d.piHome, "settings.json"), JSON.stringify({ packages: ["npm:pi-extension-manager@0.8.2"] }));
+		const db = openDb(dbPath(d.stateDir));
+		replaceAll(db, [{ name: "pi-extension-manager", version: "0.9.0" }], "test");
+		db.close();
+		const { code, out } = await cliRun(["updates", "--json"], d);
 		expect(code).toBe(0);
-		expect(out).toContain('"latest":"2"');
+		expect(out).toContain('"latest":"0.9.0"');
 	});
 
-	it("catalog reads snapshot", async () => {
+	it("catalog reads the SQLite mirror", async () => {
 		const d = deps();
-		await saveCatalog(d.stateDir, { fetchedAt: new Date().toISOString(), packages: [{ name: "a", version: "1" }] });
+		const db = openDb(dbPath(d.stateDir));
+		replaceAll(db, [{ name: "a", version: "1" }], "test");
+		db.close();
 		const { code, out } = await cliRun(["catalog", "--json"], d);
 		expect(code).toBe(0);
 		expect(out).toContain('"name":"a"');
+		expect(out).toContain('"sha256"');
+	});
+
+	it("search --offline queries the mirror only", async () => {
+		const d = deps();
+		const db = openDb(dbPath(d.stateDir));
+		replaceAll(db, [{ name: "pi-lsp", version: "1", description: "LSP tools" }], "test");
+		db.close();
+		const { code, out } = await cliRun(["search", "lsp", "--offline", "--json"], d);
+		expect(code).toBe(0);
+		expect(out).toContain('"name":"pi-lsp"');
+		expect(out).toContain('"offline":true');
+	});
+
+	it("mirror syncs upstream into the local index", async () => {
+		const d = deps({ reg: new FakeRegistry([{ name: "pi-lsp", version: "1" }]) });
+		const { code, out } = await cliRun(["mirror", "--json"], d);
+		expect(code).toBe(0);
+		expect(out).toContain('"synced":1');
+		const db = openDb(dbPath(d.stateDir));
+		expect(catalogList(db)).toHaveLength(1);
+		db.close();
 	});
 
 	it("install validates source", async () => {

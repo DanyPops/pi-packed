@@ -153,3 +153,47 @@ describe("envMs (service lifecycle knob)", () => {
 		expect(envMs("PI_PACKED_TEST_MS", 5000)).toBe(0);
 	});
 });
+
+describe("upstream etiquette (429 handling)", () => {
+	it("retries on 429 honoring Retry-After, then succeeds", async () => {
+		let attempts = 0;
+		await using server = Bun.serve({
+			port: 0,
+			fetch() {
+				attempts++;
+				if (attempts <= 2) {
+					return new Response("slow down", { status: 429, headers: { "retry-after": "0" } });
+				}
+				return Response.json({ total: 0, objects: [] });
+			},
+		});
+		const reg = new HttpRegistry(`http://127.0.0.1:${server.port}`, 250, 0, 1);
+		const { total } = await reg.search("keywords:pi-package x", 10);
+		expect(total).toBe(0);
+		expect(attempts).toBe(3);
+	});
+
+	it("gives up after max attempts", async () => {
+		let attempts = 0;
+		await using server = Bun.serve({
+			port: 0,
+			fetch() {
+				attempts++;
+				return new Response("slow down", { status: 429, headers: { "retry-after": "0" } });
+			},
+		});
+		const reg = new HttpRegistry(`http://127.0.0.1:${server.port}`, 250, 0, 1);
+		expect(reg.search("keywords:pi-package x", 10)).rejects.toThrow(/429/);
+		expect(attempts).toBeGreaterThanOrEqual(3);
+	});
+
+	it("searchAll pauses between pages", async () => {
+		const reg = new HttpRegistry("http://unused", 250, 40);
+		const t0 = Date.now();
+		// monkey-patch searchPage to avoid network
+		reg.searchPage = async (_q: string, from: number) =>
+			from === 0 ? { results: [{ name: "a", version: "1" }], total: 2 } : { results: [{ name: "b", version: "1" }], total: 2 };
+		await reg.searchAll("keywords:pi-package");
+		expect(Date.now() - t0).toBeGreaterThanOrEqual(40);
+	});
+});

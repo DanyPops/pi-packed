@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PkgInfo, Registry, SearchPage } from "./ports.ts";
 import { HttpRegistry } from "./registry.ts";
+import { DAEMON_HOST, PROBE_TIMEOUT_MS, REGISTRY_FETCH_TIMEOUT_MS, PORT_FILE, TOKEN_FILE } from "./constants.ts";
 
 export class DaemonRegistry implements Registry {
 	constructor(
@@ -17,7 +18,7 @@ export class DaemonRegistry implements Registry {
 	private async get<T>(path: string): Promise<T> {
 		const res = await fetch(`${this.base}${path}`, {
 			headers: { authorization: `Bearer ${this.token}` },
-			signal: AbortSignal.timeout(15_000),
+			signal: AbortSignal.timeout(REGISTRY_FETCH_TIMEOUT_MS),
 		});
 		if (!res.ok) throw new Error(`daemon HTTP ${res.status}`);
 		return (await res.json()) as T;
@@ -55,16 +56,16 @@ export async function probe(dir: string): Promise<DaemonHandle | undefined> {
 	let port: string;
 	let token: string;
 	try {
-		port = readFileSync(join(dir, "port"), "utf8").trim();
-		token = readFileSync(join(dir, "token"), "utf8").trim();
+		port = readFileSync(join(dir, PORT_FILE), "utf8").trim();
+		token = readFileSync(join(dir, TOKEN_FILE), "utf8").trim();
 	} catch {
 		return undefined;
 	}
-	const base = `http://127.0.0.1:${port}`;
+	const base = `http://${DAEMON_HOST}:${port}`;
 	try {
 		const res = await fetch(`${base}/health`, {
 			headers: { authorization: `Bearer ${token}` },
-			signal: AbortSignal.timeout(800),
+			signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
 		});
 		if (res.ok) return { base, token };
 	} catch {

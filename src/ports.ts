@@ -62,10 +62,12 @@ export interface UpdatesSnapshot {
 }
 
 /** Scope every query to pi packages unless the caller already qualified it. */
+import { PI_PACKAGE_KEYWORD } from "./constants.ts";
+
 export function buildSearchQuery(q: string): string {
 	const t = q.trim();
 	if (t.includes("keywords:")) return t;
-	return t === "" ? "keywords:pi-package" : `keywords:pi-package ${t}`;
+	return t === "" ? PI_PACKAGE_KEYWORD : `${PI_PACKAGE_KEYWORD} ${t}`;
 }
 
 export function clampLimit(v: number, def: number, max: number): number {

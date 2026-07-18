@@ -3,11 +3,50 @@
  * Lean mapping = Facade over npm's verbose package documents.
  */
 import type { Pkg, PkgInfo, Registry, SearchPage } from "./ports.ts";
+import {
+	NPM_REGISTRY_BASE, SEARCH_PAGE_SIZE, RETRY_MAX_ATTEMPTS, RETRY_BASE_DELAY_MS, PAGE_DELAY_MS,
+} from "./constants.ts";
+import { createLogger } from "./log.ts";
+
+const log = createLogger("registry");
+
+/** Upstream etiquette: honor Retry-After on 429, exponential backoff
+ * otherwise, give up after RETRY_MAX_ATTEMPTS. */
+async function fetchWithRetry(url: string, init: RequestInit | undefined, baseDelayMs: number): Promise<Response> {
+	let lastErr: Error | undefined;
+	for (let attempt = 1; attempt <= RETRY_MAX_ATTEMPTS; attempt++) {
+		const t0 = Date.now();
+		try {
+			const res = await fetch(url, init);
+			const ms = Date.now() - t0;
+			if (res.status === 429 && attempt < RETRY_MAX_ATTEMPTS) {
+				const ra = res.headers.get("retry-after");
+				const delayMs =
+					ra !== null && Number(ra) > 0
+						? Number(ra) * 1000 // authoritative only when positive
+						: baseDelayMs * 2 ** (attempt - 1); // npm sends 0: use exponential
+				log.warn("429 rate-limited, backing off", { attempt, delayMs, ms, url: url.slice(0, 120) });
+				await Bun.sleep(delayMs);
+				continue;
+			}
+			log.debug("fetch", { status: res.status, ms, attempt, url: url.slice(0, 120) });
+			return res;
+		} catch (e) {
+			lastErr = e instanceof Error ? e : new Error(String(e));
+			log.warn("fetch error, retrying", { attempt, error: lastErr.message, url: url.slice(0, 120) });
+			if (attempt < RETRY_MAX_ATTEMPTS) await Bun.sleep(baseDelayMs * 2 ** (attempt - 1));
+		}
+	}
+	log.error("retry budget exhausted", { attempts: RETRY_MAX_ATTEMPTS, url: url.slice(0, 120) });
+	throw lastErr ?? new Error("retry budget exhausted");
+}
 
 export class HttpRegistry implements Registry {
 	constructor(
-		private base = "https://registry.npmjs.org",
-		private pageSize = 250,
+		private base = NPM_REGISTRY_BASE,
+		private pageSize = SEARCH_PAGE_SIZE,
+		private pageDelayMs = PAGE_DELAY_MS,
+		private retryBaseDelayMs = RETRY_BASE_DELAY_MS,
 	) {}
 
 	async search(query: string, limit: number): Promise<SearchPage> {
@@ -16,7 +55,7 @@ export class HttpRegistry implements Registry {
 
 	async searchPage(query: string, from: number, size: number): Promise<SearchPage> {
 		const params = new URLSearchParams({ text: query, size: String(size), from: String(from) });
-		const res = await fetch(`${this.base}/-/v1/search?${params}`);
+		const res = await fetchWithRetry(`${this.base}/-/v1/search?${params}`, undefined, this.retryBaseDelayMs);
 		if (!res.ok) throw new Error(`npm search: HTTP ${res.status}`);
 		const doc = (await res.json()) as {
 			total?: number;
@@ -32,20 +71,28 @@ export class HttpRegistry implements Registry {
 	}
 
 	async searchAll(query: string): Promise<Pkg[]> {
-		const out: Pkg[] = [];
+		// Map by name: npm's ranking shifts mid-pagination and a package can
+		// appear on two pages — first occurrence wins.
+		const byName = new Map<string, Pkg>();
 		let from = 0;
 		for (;;) {
+			if (from > 0 && this.pageDelayMs > 0) await Bun.sleep(this.pageDelayMs);
 			const { results, total } = await this.searchPage(query, from, this.pageSize);
-			out.push(...results);
+			if (results.length === 0 || from >= total) break;
+			for (const p of results) {
+				if (!byName.has(p.name)) byName.set(p.name, p);
+			}
 			from += results.length;
-			if (results.length === 0 || from >= total) return out;
 		}
+		return [...byName.values()];
 	}
 
 	async info(name: string): Promise<PkgInfo> {
-		const res = await fetch(`${this.base}/${encodeURIComponent(name).replace("%2F", "/")}`, {
-			headers: { accept: "application/vnd.npm.install-v1+json" },
-		});
+		const res = await fetchWithRetry(
+			`${this.base}/${encodeURIComponent(name).replace("%2F", "/")}`,
+			{ headers: { accept: "application/vnd.npm.install-v1+json" } },
+			this.retryBaseDelayMs,
+		);
 		if (!res.ok) throw new Error(`npm info ${name}: HTTP ${res.status}`);
 		const doc = (await res.json()) as {
 			name?: string;

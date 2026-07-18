@@ -7,7 +7,11 @@ import { buildSearchQuery, clampLimit } from "./ports.ts";
 import type { Installer, Registry } from "./ports.ts";
 import { TTLCache } from "./cache.ts";
 import { loadUpdates } from "./watcher.ts";
-import { loadCatalog } from "./catalog.ts";
+import { openDb, searchLocal, catalogList, getSyncMeta, dbPath } from "./db.ts";
+import { VERSION, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT } from "./constants.ts";
+import { createLogger } from "./log.ts";
+
+const log = createLogger("service");
 
 export interface Deps {
 	reg: Registry;
@@ -35,12 +39,22 @@ export function createApp(deps: Deps): { fetch: (req: Request) => Promise<Respon
 		const path = url.pathname;
 
 		if (path === "/health" && req.method === "GET") {
-			return json({ ok: true, version: "0.1.0" });
+			return json({ ok: true, version: VERSION });
 		}
 
 		if (path === "/search" && req.method === "GET") {
 			const q = url.searchParams.get("q") ?? "";
-			const limit = clampLimit(Number(url.searchParams.get("limit")), 10, 50);
+			const limit = clampLimit(Number(url.searchParams.get("limit")), SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT);
+			// offline=1: serve from the SQLite mirror (apt-cache search analog)
+			if (url.searchParams.get("offline") === "1") {
+				const db = openDb(dbPath(deps.stateDir));
+				try {
+					const results = searchLocal(db, q, limit);
+					return json({ query: q, total: results.length, results, offline: true });
+				} finally {
+					db.close();
+				}
+			}
 			try {
 				const { results, total } = await deps.reg.search(buildSearchQuery(q), limit);
 				return json({ query: q, total, results });
@@ -84,8 +98,13 @@ export function createApp(deps: Deps): { fetch: (req: Request) => Promise<Respon
 		}
 
 		if (path === "/catalog" && req.method === "GET") {
-			const snap = await loadCatalog(deps.stateDir);
-			return json(snap ?? { packages: [] });
+			const db = openDb(dbPath(deps.stateDir));
+			try {
+				const meta = getSyncMeta(db);
+				return json({ fetchedAt: meta?.fetchedAt, sha256: meta?.sha256, packages: catalogList(db) });
+			} finally {
+				db.close();
+			}
 		}
 
 		return err(404, "not found");
@@ -93,6 +112,7 @@ export function createApp(deps: Deps): { fetch: (req: Request) => Promise<Respon
 
 	return {
 		async fetch(req: Request): Promise<Response> {
+			const t0 = Date.now();
 			if (req.headers.get("authorization") !== `Bearer ${deps.token}`) {
 				return err(401, "missing or invalid bearer token");
 			}
@@ -100,13 +120,17 @@ export function createApp(deps: Deps): { fetch: (req: Request) => Promise<Respon
 			if (req.method === "GET" && !["/health", "/updates", "/catalog"].includes(new URL(req.url).pathname)) {
 				const hit = cache.get(req.url);
 				if (hit) {
+					log.debug("request", { path: new URL(req.url).pathname, cache: "hit", ms: Date.now() - t0 });
 					return new Response(hit, { headers: { "content-type": "application/json", "x-cache": "hit" } });
 				}
 				const res = await route(req);
 				if (res.status === 200) cache.set(req.url, await res.clone().text());
+				log.debug("request", { path: new URL(req.url).pathname, status: res.status, cache: "miss", ms: Date.now() - t0 });
 				return res;
 			}
-			return route(req);
+			const res = await route(req);
+			log.debug("request", { path: new URL(req.url).pathname, status: res.status, ms: Date.now() - t0 });
+			return res;
 		},
 	};
 }

@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readInstalledPackages, splitNpmSource } from "../src/installed.ts";
 import { checkUpdates, saveUpdates, loadUpdates, startWatcher } from "../src/watcher.ts";
-import { syncCatalog, catalogStale, loadCatalog } from "../src/catalog.ts";
+import { catalogStatus } from "../src/catalog.ts";
+import { openDb, replaceAll } from "../src/db.ts";
 import type { PkgInfo, Registry, SearchPage } from "../src/ports.ts";
 
 class FakeRegistry implements Registry {
@@ -84,10 +85,10 @@ describe("readInstalledPackages", () => {
 	});
 });
 
-describe("checkUpdates", () => {
-	it("flags drift only", async () => {
-		const reg = new FakeRegistry({ "pi-extension-manager": "0.9.0", "pi-lsp": "1.0.0" });
-		const updates = await checkUpdates(reg, [
+describe("checkUpdates (mirror-based)", () => {
+	it("flags drift only", () => {
+		const latest = (name: string) => ({ "pi-extension-manager": "0.9.0", "pi-lsp": "1.0.0" })[name];
+		const updates = checkUpdates(latest, [
 			{ name: "pi-extension-manager", pinned: "0.8.2" },
 			{ name: "pi-lsp", installed: "1.0.0" },
 		]);
@@ -95,9 +96,8 @@ describe("checkUpdates", () => {
 		expect(updates[0]).toMatchObject({ name: "pi-extension-manager", installed: "0.8.2", latest: "0.9.0" });
 	});
 
-	it("registry errors skip the package", async () => {
-		const reg = new FakeRegistry({});
-		const updates = await checkUpdates(reg, [{ name: "gone", pinned: "1.0.0" }]);
+	it("packages missing from the mirror are skipped", () => {
+		const updates = checkUpdates(() => undefined, [{ name: "gone", pinned: "1.0.0" }]);
 		expect(updates).toEqual([]);
 	});
 });
@@ -115,10 +115,12 @@ describe("updates store", () => {
 describe("watcher producer", () => {
 	it("writes a snapshot on tick", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "packed-"));
-		const reg = new FakeRegistry({ "pi-extension-manager": "0.9.0" });
-		const stop = startWatcher(reg, dir, () => [{ name: "pi-extension-manager", pinned: "0.8.2" }], {
-			intervalMs: 60_000, // immediate first check is what we assert
-		});
+		const stop = startWatcher(
+			() => "0.9.0",
+			dir,
+			() => [{ name: "pi-extension-manager", pinned: "0.8.2" }],
+			{ intervalMs: 60_000 },
+		);
 		const deadline = Date.now() + 2000;
 		let snap;
 		while (Date.now() < deadline) {
@@ -131,22 +133,14 @@ describe("watcher producer", () => {
 	});
 });
 
-describe("catalog", () => {
-	it("syncCatalog accumulates pages into a snapshot", async () => {
-		const reg = new FakeRegistry({}, {
-			0: { results: [{ name: "a", version: "1" }, { name: "b", version: "1" }], total: 3 },
-			2: { results: [{ name: "c", version: "1" }], total: 3 },
-		});
+describe("catalog status", () => {
+	it("stale when unsynced, fresh after sync", () => {
 		const dir = mkdtempSync(join(tmpdir(), "packed-"));
-		expect(await syncCatalog(reg, dir)).toBe(3);
-		const snap = await loadCatalog(dir);
-		expect(snap?.packages.map((p) => p.name)).toEqual(["a", "b", "c"]);
-		expect(snap?.fetchedAt).toBeTruthy();
-	});
-
-	it("catalogStale", () => {
-		expect(catalogStale({ fetchedAt: new Date().toISOString(), packages: [] }, 6 * 3_600_000)).toBe(false);
-		expect(catalogStale({ fetchedAt: new Date(Date.now() - 7 * 3_600_000).toISOString(), packages: [] }, 6 * 3_600_000)).toBe(true);
-		expect(catalogStale(undefined, 1000)).toBe(true);
+		expect(catalogStatus(dir, 6 * 3_600_000).stale).toBe(true);
+		const db = openDb(dir + "/packed.db");
+		replaceAll(db, [{ name: "a", version: "1" }], "test");
+		db.close();
+		expect(catalogStatus(dir, 6 * 3_600_000).stale).toBe(false);
+		expect(catalogStatus(dir, -1).stale).toBe(true);
 	});
 });
