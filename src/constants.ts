@@ -31,7 +31,7 @@ export const IDLE_BUDGET_DEFAULT_MS = 10 * 60_000; // on-demand self-exit
 export const WATCHDOG_TICK_MS = 15_000;
 
 // --- Identity ---
-export const VERSION = "0.2.1";
+export const VERSION = "0.3.0";
 
 // --- State-dir file names ---
 export const TOKEN_FILE = "token";
