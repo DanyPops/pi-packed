@@ -11,6 +11,7 @@ import { checkUpdates } from "./watcher.ts";
 import { syncCatalog } from "./catalog.ts";
 import { openDb, searchLocal, catalogList, getSyncMeta, latestVersion, dbPath } from "./db.ts";
 import { NAME_RE, defaultPiBin } from "./install.ts";
+import type { InstallApproval, SecuritySettingsPort } from "./security.ts";
 
 function defaultPiBinForUnit(): string | undefined {
 	const b = defaultPiBin();
@@ -33,6 +34,7 @@ usage:
   packed catalog [--json]                      local package index (apt-cache stats)
   packed install <source> [--json]             pi install npm:|git:|https://… via daemon
   packed remove <name> [--json]                remove by bare npm name via daemon
+  packed security [always|never] [--json]       read or set install approval policy
   packed serve                                 run the long-running daemon
   packed service                               print a systemd user unit
   packed version                               print version
@@ -41,6 +43,7 @@ usage:
 export interface CliDeps {
 	reg: Registry;
 	inst: Installer;
+	security: SecuritySettingsPort;
 	stateDir: string;
 	piHome: string;
 	execPath?: string; // bun binary (defaults to process.execPath)
@@ -199,6 +202,22 @@ const commands: Record<string, { usage: string; run: Command }> = {
 		},
 	},
 
+	security: {
+		usage: "packed security [always|never] [--json]",
+		async run(_rest, d, flags, pos) {
+			const requested = pos[0];
+			if (requested !== undefined && requested !== "always" && requested !== "never") {
+				return usageErr(`usage: ${commands["security"]!.usage}\n`);
+			}
+			const settings = requested
+				? await d.security.setInstallApproval(requested as InstallApproval)
+				: await d.security.security();
+			return flags.json
+				? ok(`${JSON.stringify(settings)}\n`)
+				: ok(`install approval: ${settings.installApproval}\n`);
+		},
+	},
+
 	remove: {
 		usage: "packed remove <name> [--json]  (bare npm name, e.g. pi-lsp or @scope/pkg)",
 		async run(_rest, d, flags, pos) {
@@ -277,7 +296,7 @@ if (import.meta.main) {
 	} else {
 		const { stateDir } = await import("./state.ts");
 		const { defaultPiHome } = await import("./installed.ts");
-		const { DaemonBackedInstaller, resolveRegistry } = await import("./client.ts");
+		const { DaemonBackedSecurity, DaemonBackedInstaller, resolveRegistry } = await import("./client.ts");
 		const dir = stateDir();
 		// mirror talks to UPSTREAM, not the daemon cache — apt update semantics.
 		const reg =
@@ -287,6 +306,7 @@ if (import.meta.main) {
 		const { code, out } = await cliRun(args, {
 			reg,
 			inst: new DaemonBackedInstaller(dir),
+			security: new DaemonBackedSecurity(dir),
 			stateDir: dir,
 			piHome: defaultPiHome(),
 		});

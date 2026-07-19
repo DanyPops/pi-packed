@@ -8,6 +8,7 @@
  */
 import type { PackageDaemonPort as ClientPackageDaemonPort } from "../../src/client.ts";
 import type { InstalledPkg, Pkg, PkgInfo, UpdateEntry } from "../../src/ports.ts";
+import type { InstallApproval, SecuritySettings } from "../../src/security.ts";
 
 export type { InstalledPkg, UpdateEntry };
 export type PackageInfo = PkgInfo;
@@ -25,6 +26,8 @@ export interface Natives {
 	info(name: string): Promise<PackageInfo>;
 	installed(): Promise<InstalledPkg[]>;
 	updates(): Promise<UpdateEntry[]>;
+	security(): Promise<SecuritySettings>;
+	setInstallApproval(value: InstallApproval): Promise<SecuritySettings>;
 	install(source: string): Promise<string>;
 	remove(name: string): Promise<string>;
 }
@@ -58,6 +61,8 @@ export async function createNatives(connect: PackageDaemonConnector = connectDef
 		info: (name) => call((daemon) => daemon.info(name)),
 		installed: () => call((daemon) => daemon.installed()),
 		updates: () => call((daemon) => daemon.updates()),
+		security: () => call((daemon) => daemon.security()),
+		setInstallApproval: (value) => call((daemon) => daemon.setInstallApproval(value)),
 		install: (source) => call((daemon) => daemon.install(source)),
 		remove: (name) => call((daemon) => daemon.remove(name)),
 	};

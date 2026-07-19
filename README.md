@@ -11,8 +11,8 @@ inside the supervised Bun daemon.
 ```text
 ┌─ Pi extension (Node-compatible) ──────────────┐
 │ pkg_search · pkg_info · pkg_install           │
-│ /packages · session_start update notification │
-│ confirmation gates · no Bun/SQLite dependency │
+│ /packages · /packed security settings          │
+│ policy-driven approval · no Bun/SQLite access  │
 └──────────────────┬────────────────────────────┘
                    │ authenticated loopback HTTP
 ┌─ packed.service (Bun) ────────────────────────┐
@@ -37,9 +37,7 @@ packed installed --json
 /packages
 ```
 
-Packages execute arbitrary code. `pkg_install` always requires interactive user
-confirmation before the extension sends the mutation to the authenticated
-daemon.
+Packages execute arbitrary code. `pkg_install` uses daemon-owned security settings with secure default `installApproval: always`. Open `/packed` to choose **Always require approval** or explicitly opt out with **Never require approval**. The unsafe opt-out allows agent installs without an interactive UI. `/packages` remains the package browser.
 
 ## CLI
 
@@ -53,6 +51,7 @@ daemon.
 | `packed catalog [--json]` | Inspect the local package index |
 | `packed install <source> [--json]` | Authenticated daemon install for `npm:`, `git:`, or `https://` sources |
 | `packed remove <name> [--json]` | Authenticated daemon removal by bare npm name |
+| `packed security [always\|never] [--json]` | Read or set the install approval policy |
 | `packed serve` | Run the loopback daemon |
 | `packed service` | Print the systemd user unit |
 | `packed version` | Print the package/service version |
@@ -77,13 +76,15 @@ The daemon listens on loopback only.
 | `GET` | `/search?q=&limit=&offline=1` |
 | `GET` | `/info?name=` |
 | `GET` | `/installed` |
+| `GET` | `/security` |
+| `POST` | `/security` with `{ "installApproval": "always" | "never" }` |
 | `GET` | `/updates` |
 | `GET` | `/catalog` |
 | `POST` | `/install` with `{ "source": "..." }` |
 | `POST` | `/remove` with `{ "name": "..." }` |
 
 State defaults to `~/.cache/pi-packed/` and contains `token`, `port`,
-`updates.json`, and `packed.db`. Relevant environment variables:
+`updates.json`, `security.json`, and `packed.db`. Relevant environment variables:
 
 - `PI_PACKED_HOME`
 - `PI_PACKED_PI_HOME`

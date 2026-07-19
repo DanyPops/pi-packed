@@ -39,6 +39,7 @@ export const PORT_FILE = "port";
 export const UPDATES_FILE = "updates.json";
 export const DB_FILE = "packed.db";
 export const SETTINGS_FILE = "settings.json";
+export const SECURITY_FILE = "security.json";
 
 // --- Environment knobs ---
 export const ENV = {

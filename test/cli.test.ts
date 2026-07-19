@@ -46,6 +46,10 @@ function deps(over: Partial<CliDeps> = {}): CliDeps {
 	return {
 		reg: new FakeRegistry(),
 		inst: new FakeInstaller(),
+		security: {
+			async security() { return { installApproval: "always" as const }; },
+			async setInstallApproval(installApproval) { return { installApproval }; },
+		},
 		stateDir: mkdtempSync(join(tmpdir(), "packed-")),
 		piHome: mkdtempSync(join(tmpdir(), "packed-pihome-")),
 		...over,
@@ -53,6 +57,18 @@ function deps(over: Partial<CliDeps> = {}): CliDeps {
 }
 
 describe("CLI", () => {
+	it("security reads and writes stable JSON through the daemon port", async () => {
+		let installApproval: "always" | "never" = "always";
+		const d = deps({
+			security: {
+				async security() { return { installApproval }; },
+				async setInstallApproval(value) { installApproval = value; return { installApproval }; },
+			},
+		});
+		expect((await cliRun(["security", "--json"], d)).out).toBe('{"installApproval":"always"}\n');
+		expect((await cliRun(["security", "never", "--json"], d)).out).toBe('{"installApproval":"never"}\n');
+	});
+
 	it("search --json", async () => {
 		const d = deps({ reg: new FakeRegistry([{ name: "pi-lsp", version: "0.3.0" }]) });
 		const { code, out } = await cliRun(["search", "lsp", "--json"], d);
@@ -210,6 +226,8 @@ describe("daemon client", () => {
 		expect((await client.info("pi-lsp")).version).toBe("1.0.0");
 		expect(await client.installed()).toEqual([]);
 		expect(await client.updates()).toEqual([]);
+		expect(await client.security()).toEqual({ installApproval: "always" });
+		expect(await client.setInstallApproval("never")).toEqual({ installApproval: "never" });
 		expect(await client.install("npm:pi-lsp")).toBe("Installed npm:pi-lsp");
 		expect(await client.remove("pi-lsp")).toBe("Removed npm:pi-lsp");
 		const installer = new PackageDaemonInstaller(client);

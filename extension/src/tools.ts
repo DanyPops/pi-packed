@@ -10,6 +10,28 @@ function text(t: string, details: Record<string, unknown> = {}) {
 	return { content: [{ type: "text" as const, text: t }], details };
 }
 
+export async function installPackageWithPolicy(
+	source: string,
+	natives: Pick<Natives, "security" | "install">,
+	ctx: { hasUI: boolean; ui: { confirm(title: string, message: string): Promise<boolean> } },
+) {
+	try {
+		const { installApproval } = await natives.security();
+		if (installApproval === "always") {
+			if (!ctx.hasUI) return text("pkg_install requires interactive approval; change installApproval in /packed to opt out.");
+			const ok = await ctx.ui.confirm(
+				"Install Pi package",
+				`Run: pi install ${source}\n\nPackages execute arbitrary code. Continue?`,
+			);
+			if (!ok) return text("Install cancelled by user.");
+		}
+		const out = await natives.install(source);
+		return text(out || `Installed ${source}. Reload with /reload to activate.`);
+	} catch (error) {
+		return text(`install failed: ${error instanceof Error ? error.message : error}`);
+	}
+}
+
 export function registerTools(pi: ExtensionAPI, natives: Natives): void {
 	pi.registerTool({
 		name: "pkg_search",
@@ -71,25 +93,12 @@ export function registerTools(pi: ExtensionAPI, natives: Natives): void {
 		label: "Pi Package Install",
 		description:
 			"Install a Pi package (pi install). Supports npm:<pkg>[@ver], git:<host>/<owner>/<repo>[@ref], " +
-			"or https:// URLs. Packages execute arbitrary code — the user confirms every install.",
+			"or https:// URLs. Packages execute arbitrary code. Approval follows the installApproval policy configured in /packed (secure default: always).",
 		parameters: Type.Object({
 			source: Type.String({ description: "e.g. 'npm:pi-lsp', 'npm:@scope/pkg@1.2.3', 'git:github.com/u/r@v1'" }),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			if (!ctx.hasUI) {
-				return text("pkg_install requires an interactive session (the user must confirm).");
-			}
-			const ok = await ctx.ui.confirm(
-				"Install Pi package",
-				`Run: pi install ${params.source}\n\nPackages execute arbitrary code. Continue?`,
-			);
-			if (!ok) return text("Install cancelled by user.");
-			try {
-				const out = await natives.install(params.source);
-				return text(out || `Installed ${params.source}. Reload with /reload to activate.`);
-			} catch (e) {
-				return text(`install failed: ${e instanceof Error ? e.message : e}`);
-			}
+			return installPackageWithPolicy(params.source, natives, ctx);
 		},
 	});
 }

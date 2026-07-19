@@ -8,6 +8,7 @@ import { join } from "node:path";
 import type { InstalledPkg, Installer, PkgInfo, Registry, SearchPage, UpdateEntry, UpdatesSnapshot } from "./ports.ts";
 import { HttpRegistry } from "./registry.ts";
 import { DAEMON_HOST, PROBE_TIMEOUT_MS, REGISTRY_FETCH_TIMEOUT_MS, PORT_FILE, TOKEN_FILE } from "./constants.ts";
+import type { InstallApproval, SecuritySettings } from "./security.ts";
 
 export type FetchTransport = (request: Request) => Promise<Response>;
 
@@ -16,6 +17,8 @@ export interface PackageDaemonPort {
 	info(name: string): Promise<PkgInfo>;
 	installed(): Promise<InstalledPkg[]>;
 	updates(): Promise<UpdateEntry[]>;
+	security(): Promise<SecuritySettings>;
+	setInstallApproval(value: InstallApproval): Promise<SecuritySettings>;
 	install(source: string): Promise<string>;
 	remove(name: string): Promise<string>;
 }
@@ -85,6 +88,14 @@ export class PackageDaemonClient implements PackageDaemonPort {
 		return (await this.request<UpdatesSnapshot>("/updates")).updates;
 	}
 
+	security(): Promise<SecuritySettings> {
+		return this.request("/security");
+	}
+
+	setInstallApproval(installApproval: InstallApproval): Promise<SecuritySettings> {
+		return this.request("/security", { method: "POST", body: JSON.stringify({ installApproval }) });
+	}
+
 	async install(source: string): Promise<string> {
 		const result = await this.request<MutationResponse>("/install", {
 			method: "POST",
@@ -116,6 +127,16 @@ export class PackageDaemonInstaller implements Installer {
 			throw new PackageDaemonError("daemon package removal requires an npm: source", "remove");
 		}
 		return this.client.remove(source.slice(4));
+	}
+}
+
+export class DaemonBackedSecurity {
+	constructor(private readonly stateDirectory: string) {}
+	async security(): Promise<SecuritySettings> {
+		return (await connectPackageDaemon(this.stateDirectory)).security();
+	}
+	async setInstallApproval(value: InstallApproval): Promise<SecuritySettings> {
+		return (await connectPackageDaemon(this.stateDirectory)).setInstallApproval(value);
 	}
 }
 

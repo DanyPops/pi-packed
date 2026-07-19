@@ -78,6 +78,24 @@ describe("service app", () => {
 		}
 	});
 
+	it("reads and updates install approval with a secure default", async () => {
+		const app = createApp(deps());
+		const initial = await app.fetch(new Request("http://x/security", { headers: auth }));
+		expect(await initial.json()).toEqual({ installApproval: "always" });
+		const updated = await app.fetch(new Request("http://x/security", {
+			method: "POST",
+			headers: { ...auth, "content-type": "application/json" },
+			body: JSON.stringify({ installApproval: "never" }),
+		}));
+		expect(await updated.json()).toEqual({ installApproval: "never" });
+		const invalid = await app.fetch(new Request("http://x/security", {
+			method: "POST",
+			headers: { ...auth, "content-type": "application/json" },
+			body: JSON.stringify({ installApproval: "sometimes" }),
+		}));
+		expect(invalid.status).toBe(400);
+	});
+
 	it("GET /search scopes query and clamps limit", async () => {
 		const reg = new FakeRegistry([{ name: "pi-lsp", version: "0.3.0" }], 42);
 		const app = createApp(deps({ reg }));

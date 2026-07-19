@@ -11,6 +11,7 @@ import { readInstalledPackages, defaultPiHome } from "./installed.ts";
 import { openDb, searchLocal, catalogList, getSyncMeta, dbPath } from "./db.ts";
 import { VERSION, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT } from "./constants.ts";
 import { createLogger } from "./log.ts";
+import { readSecuritySettings, writeSecuritySettings, type InstallApproval } from "./security.ts";
 
 const log = createLogger("service");
 
@@ -43,6 +44,23 @@ export function createApp(deps: Deps): { fetch: (req: Request) => Promise<Respon
 
 		if (path === "/health" && req.method === "GET") {
 			return json({ ok: true, version: VERSION });
+		}
+
+		if (path === "/security" && req.method === "GET") {
+			return json(readSecuritySettings(deps.stateDir));
+		}
+
+		if (path === "/security" && req.method === "POST") {
+			let installApproval: unknown;
+			try {
+				installApproval = ((await req.json()) as { installApproval?: unknown }).installApproval;
+			} catch {
+				return err(400, "invalid security settings JSON");
+			}
+			if (installApproval !== "always" && installApproval !== "never") {
+				return err(400, "installApproval must be always or never");
+			}
+			return json(writeSecuritySettings(deps.stateDir, { installApproval: installApproval as InstallApproval }));
 		}
 
 		if (path === "/search" && req.method === "GET") {
@@ -143,7 +161,7 @@ export function createApp(deps: Deps): { fetch: (req: Request) => Promise<Respon
 				return err(401, "missing or invalid bearer token");
 			}
 			// Cache successful GETs by URI (smart-proxy concern).
-			if (req.method === "GET" && !["/health", "/updates", "/catalog"].includes(new URL(req.url).pathname)) {
+			if (req.method === "GET" && !["/health", "/updates", "/catalog", "/security"].includes(new URL(req.url).pathname)) {
 				const hit = cache.get(req.url);
 				if (hit) {
 					log.debug("request", { path: new URL(req.url).pathname, cache: "hit", ms: Date.now() - t0 });
