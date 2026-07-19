@@ -1,6 +1,6 @@
 {
   "name": "@danypops/pi-packed",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Package service for the Pi agent: search/info/install/updates + /packages TUI, backed by a long-running Bun service",
   "type": "module",
   "keywords": [
@@ -8,6 +8,7 @@
   ],
   "scripts": {
     "test": "bun test",
+    "typecheck": "bun x tsc --noEmit",
     "cli": "bun src/cli.ts",
     "serve": "bun src/cli.ts serve"
   },

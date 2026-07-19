@@ -14,8 +14,8 @@ import { showPackages } from "./tui.js";
 import { createNatives } from "./packed.js";
 import { formatUpdateNotice } from "./model.js";
 
-// Async factory (pi awaits it): dynamic imports load the service library
-// in-process — the native pattern, no subprocess.
+// Async factory (pi awaits it): the seam creates authenticated daemon
+// clients lazily. It never executes Bun-only adapters or opens SQLite.
 export default async function (pi: ExtensionAPI) {
 	const natives = await createNatives();
 	registerTools(pi, natives);

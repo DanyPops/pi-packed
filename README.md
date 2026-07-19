@@ -1,92 +1,114 @@
 # pi-packed
 
-Package service for the [Pi](https://github.com/earendil-works/pi-coding-agent) agent —
+Package service for the [Pi](https://github.com/earendil-works/pi) agent —
 DNF-style package management that both **you** and the **agent** can use.
 
-The agent gets tools (`pkg_search`, `pkg_info`, `pkg_install`); you get a CLI
-(`packed`) and an interactive TUI (`/packages`). All logic lives in a
-long-running Bun service — the extension is a thin seam.
+The agent gets native tools (`pkg_search`, `pkg_info`, `pkg_install`); you get
+the `packed` CLI and an interactive `/packages` TUI. The extension is a thin,
+Node-compatible client. Registry access, SQLite, and package execution remain
+inside the supervised Bun daemon.
 
-```
-┌─ Pi extension seam (extension/src) ───────────┐
-│ pkg_search/pkg_info/pkg_install tools         │
-│ /packages TUI · session_start notify          │
-│ thin: exec `bun src/cli.ts …`, confirm gates  │
-└───────────────┬───────────────────────────────┘
-                │ CLI (same hexagon ports)
-┌─ Bun service (src/) ──────────────────────────┼──────────┐
-│ cli.ts (command table) · service.ts (fetch)   │          │
-│ daemon: watcher (update drift) + catalogSync  │          │
-│ npm registry adapter · pi install exec adapter│          │
-└───────────────────────────────────────────────┴──────────┘
+```text
+┌─ Pi extension (Node-compatible) ──────────────┐
+│ pkg_search · pkg_info · pkg_install           │
+│ /packages · session_start update notification │
+│ confirmation gates · no Bun/SQLite dependency │
+└──────────────────┬────────────────────────────┘
+                   │ authenticated loopback HTTP
+┌─ packed.service (Bun) ────────────────────────┐
+│ typed package client API · watcher · mirror   │
+│ npm registry · SQLite WAL · pi install/remove │
+└───────────────────────────────────────────────┘
 ```
 
 ## Quickstart
 
 ```bash
-bun test                          # 52 tests
-bun src/cli.ts search lsp         # one-shot, direct to npm
-bun src/cli.ts serve &            # long-running service (warm cache + watcher)
-bun src/cli.ts updates            # diff installed vs latest
+bun test
+packed service > ~/.config/systemd/user/packed.service
+systemctl --user daemon-reload
+systemctl --user enable --now packed.service
 
-# In Pi:
-pi -e /path/to/pi-packed/extension/src/index.ts   # ephemeral
-# or: pi install git:github.com/DanyPops/pi-packed
-/packages                                              # interactive panel
+packed search lsp
+packed install npm:pi-lsp
+packed installed --json
+
+# In Pi after installing the package:
+/packages
 ```
+
+Packages execute arbitrary code. `pkg_install` always requires interactive user
+confirmation before the extension sends the mutation to the authenticated
+daemon.
 
 ## CLI
 
 | Command | What |
 |---|---|
-| `packed search <q> [--limit N] [--json]` | npm search scoped to `keywords:pi-package` |
-| `packed info <name> [--json]` | version, repo, pi manifest, size |
-| `packed updates [--cached]` | drift vs dist-tags.latest (`--cached` = watcher snapshot) |
-| `packed installed` | parse `~/.pi/agent/settings.json` (+ node_modules versions) |
-| `packed catalog` | full pi-package snapshot (hot browse) |
-| `packed install <source>` | allowlisted: `npm:` / `git:` / `https://` |
-| `packed remove <name>` | bare npm name |
-| `packed serve` | daemon: HTTP API + watcher + catalog sync + idle self-exit |
+| `packed search <q> [--offline] [--limit N] [--json]` | Search npm or the local mirror, scoped to `keywords:pi-package` |
+| `packed info <name> [--json]` | Show version, repository, Pi manifest, size, and license |
+| `packed updates [--json]` | Show drift from the local mirror |
+| `packed mirror [--json]` | Refresh the SQLite package index |
+| `packed installed [--json]` | Read Pi's installed package declarations |
+| `packed catalog [--json]` | Inspect the local package index |
+| `packed install <source> [--json]` | Authenticated daemon install for `npm:`, `git:`, or `https://` sources |
+| `packed remove <name> [--json]` | Authenticated daemon removal by bare npm name |
+| `packed serve` | Run the loopback daemon |
+| `packed service` | Print the systemd user unit |
+| `packed version` | Print the package/service version |
 
-## Service API (loopback + bearer token)
+Install/remove JSON results are stable objects:
 
-`GET /health` · `GET /search?q=&limit=` · `GET /info?name=` · `POST /install`
-· `GET /updates` · `GET /catalog`
+```json
+{"ok":true,"source":"npm:pi-lsp","output":"Installed npm:pi-lsp"}
+```
 
-State in `~/.cache/pi-packed/` (`PI_PACKED_HOME`): `token`, `port`,
-`updates.json`, `catalog.json`. Env knobs: `PI_PACKED_WATCH_SECS` (default
-30min), `PI_PACKED_CATALOG_SECS` (6h), `PI_PACKED_IDLE_SECS` (10min),
-`PI_PACKED_PI_HOME`, `PACKED_CLI` / `PACKED_BIN` (seam overrides).
+Failures use exit code 1 and `{ "ok": false, ... , "error": "..." }` with
+credential-safe diagnostics. Usage errors use exit code 2.
 
-## Architecture (patterns)
+## Service API
 
-| Pattern | Where |
+Every route requires the bearer token stored in the private state directory.
+The daemon listens on loopback only.
+
+| Method | Route |
 |---|---|
-| Ports & Adapters | `ports.ts` interfaces; drivers: HTTP, CLI, watcher, tests; driven: npm, pi exec |
-| Proxy | daemon = caching/protection proxy of npm; `DaemonRegistry` = remote proxy |
-| Facade | lean JSON over npm's verbose documents |
-| Event-driven | watcher + catalogSync produce snapshots; seam consumes on `session_start` → `ctx.ui.notify` (event-carried state, no callbacks) |
-| Command | `cli.ts` command table (go-tool/Cobra convention, zero deps) |
-| Deep module | tiny API surface, rich internals — one package, no sprawl |
+| `GET` | `/health` |
+| `GET` | `/search?q=&limit=&offline=1` |
+| `GET` | `/info?name=` |
+| `GET` | `/installed` |
+| `GET` | `/updates` |
+| `GET` | `/catalog` |
+| `POST` | `/install` with `{ "source": "..." }` |
+| `POST` | `/remove` with `{ "name": "..." }` |
 
-## Decisions
+State defaults to `~/.cache/pi-packed/` and contains `token`, `port`,
+`updates.json`, and `packed.db`. Relevant environment variables:
 
-- **Bun/TS over Go/Rust**: one language end-to-end, no build step (Bun runs
-  TS directly), `pi install git:…` works without binaries. Service is
-  IO-bound; runtime perf is irrelevant.
-- **No Cobra/urfave**: agent-first CLI; stdlib-style flag parsing with
-  flags-anywhere support (LLMs emit flags in random positions).
-- **npm registry is the source of truth** (5,500+ pkgs): pi.dev has no API
-  (`/api/*` → "reserved for future features"), its gallery is curated HTML
-  (~50/page, server-side `?name=` filter). Catalog sync paginates
-  `keywords:pi-package` (250/page) into `catalog.json`, TTL 6h — npm's
-  search API has no ETag, so conditional revalidation is impossible.
-- **Install validation** is an allowlist regex (defense-in-depth on top of
-  the bearer token): no shell metacharacters, ever.
+- `PI_PACKED_HOME`
+- `PI_PACKED_PI_HOME`
+- `PI_PACKED_WATCH_SECS`
+- `PI_PACKED_CATALOG_SECS`
+- `PI_PACKED_IDLE_SECS`
+- `PI_PACKED_PI_BIN` / `PI_BIN`
 
-## Roadmap
+## Architecture and safety
 
-- `pi.dev` JSON API when it ships (currently 501 reserved)
-- `replicate.npmjs.com` changes feed for near-real-time catalog
-- Unix socket transport; `bun build --compile` single-binary distribution
-- `/packages` remote-browse view fed by `catalog.json`
+- **Daemon-owned SQLite:** extensions never open the mirror directly.
+- **Runtime boundary:** extensions never call `Bun.spawn`; only the supervised
+  Bun daemon owns the `ExecInstaller` adapter.
+- **Authenticated typed client:** extension and mutation CLI paths call the same
+  loopback API and reconnect after daemon restarts.
+- **Ports and adapters:** registry and installer ports keep policy independent
+  from npm, SQLite, subprocess, HTTP, and UI adapters.
+- **Allowlisted mutation input:** package sources and names reject shell
+  metacharacters before reaching the installer.
+- **Bounded requests:** daemon calls use timeouts and return structured errors
+  without tokens or credentials.
+
+## Development
+
+```bash
+bun test
+bunx tsc --noEmit
+```

@@ -1,49 +1,158 @@
 /**
- * client.ts — daemonRegistry: remote proxy implementing the Registry port
- * over loopback HTTP. resolveRegistry routes CLI to the warm daemon when
- * reachable, straight to npm otherwise.
+ * client.ts — authenticated loopback clients for the supervised package daemon.
+ * The CLI may fall back to npm for read-only registry queries; Pi extensions use
+ * PackageDaemonClient exclusively so Bun execution and SQLite remain daemon-owned.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { PkgInfo, Registry, SearchPage } from "./ports.ts";
+import type { InstalledPkg, Installer, PkgInfo, Registry, SearchPage, UpdateEntry, UpdatesSnapshot } from "./ports.ts";
 import { HttpRegistry } from "./registry.ts";
 import { DAEMON_HOST, PROBE_TIMEOUT_MS, REGISTRY_FETCH_TIMEOUT_MS, PORT_FILE, TOKEN_FILE } from "./constants.ts";
 
-export class DaemonRegistry implements Registry {
+export type FetchTransport = (request: Request) => Promise<Response>;
+
+export interface PackageDaemonPort {
+	search(query: string, limit: number, offline?: boolean): Promise<{ query: string; total: number; results: SearchPage["results"] }>;
+	info(name: string): Promise<PkgInfo>;
+	installed(): Promise<InstalledPkg[]>;
+	updates(): Promise<UpdateEntry[]>;
+	install(source: string): Promise<string>;
+	remove(name: string): Promise<string>;
+}
+
+interface MutationResponse {
+	ok: boolean;
+	output: string;
+}
+
+export class PackageDaemonError extends Error {
 	constructor(
-		private base: string,
-		private token: string,
+		message: string,
+		readonly operation: string,
+		readonly status?: number,
+	) {
+		super(message);
+		this.name = "PackageDaemonError";
+	}
+}
+
+export class PackageDaemonClient implements PackageDaemonPort {
+	constructor(
+		private readonly base: string,
+		private readonly token: string,
+		private readonly transport: FetchTransport = fetch,
 	) {}
 
-	private async get<T>(path: string): Promise<T> {
-		const res = await fetch(`${this.base}${path}`, {
-			headers: { authorization: `Bearer ${this.token}` },
-			signal: AbortSignal.timeout(REGISTRY_FETCH_TIMEOUT_MS),
+	private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+		const headers = new Headers(init.headers);
+		headers.set("authorization", `Bearer ${this.token}`);
+		if (init.body !== undefined) headers.set("content-type", "application/json");
+		const response = await this.transport(new Request(`${this.base}${path}`, {
+			...init,
+			headers,
+			signal: init.signal ?? AbortSignal.timeout(REGISTRY_FETCH_TIMEOUT_MS),
+		}));
+		let body: unknown;
+		try {
+			body = await response.json();
+		} catch {
+			throw new PackageDaemonError(`package daemon returned invalid JSON (HTTP ${response.status})`, path, response.status);
+		}
+		if (!response.ok) {
+			const message = typeof body === "object" && body !== null && typeof (body as { error?: unknown }).error === "string"
+				? (body as { error: string }).error
+				: `package daemon HTTP ${response.status}`;
+			throw new PackageDaemonError(message, path, response.status);
+		}
+		return body as T;
+	}
+
+	async search(query: string, limit: number, offline = false): Promise<{ query: string; total: number; results: SearchPage["results"] }> {
+		const params = new URLSearchParams({ q: query, limit: String(limit) });
+		if (offline) params.set("offline", "1");
+		return this.request(`/search?${params}`);
+	}
+
+	info(name: string): Promise<PkgInfo> {
+		return this.request(`/info?name=${encodeURIComponent(name)}`);
+	}
+
+	installed(): Promise<InstalledPkg[]> {
+		return this.request("/installed");
+	}
+
+	async updates(): Promise<UpdateEntry[]> {
+		return (await this.request<UpdatesSnapshot>("/updates")).updates;
+	}
+
+	async install(source: string): Promise<string> {
+		const result = await this.request<MutationResponse>("/install", {
+			method: "POST",
+			body: JSON.stringify({ source }),
 		});
-		if (!res.ok) throw new Error(`daemon HTTP ${res.status}`);
-		return (await res.json()) as T;
+		if (!result.ok) throw new PackageDaemonError(result.output || `failed to install ${source}`, "install");
+		return result.output;
+	}
+
+	async remove(name: string): Promise<string> {
+		const result = await this.request<MutationResponse>("/remove", {
+			method: "POST",
+			body: JSON.stringify({ name }),
+		});
+		if (!result.ok) throw new PackageDaemonError(result.output || `failed to remove ${name}`, "remove");
+		return result.output;
+	}
+}
+
+export class PackageDaemonInstaller implements Installer {
+	constructor(private readonly client: PackageDaemonClient) {}
+
+	install(source: string): Promise<string> {
+		return this.client.install(source);
+	}
+
+	remove(source: string): Promise<string> {
+		if (!source.startsWith("npm:") || source.length <= 4) {
+			throw new PackageDaemonError("daemon package removal requires an npm: source", "remove");
+		}
+		return this.client.remove(source.slice(4));
+	}
+}
+
+export class DaemonBackedInstaller implements Installer {
+	constructor(private readonly stateDirectory: string) {}
+
+	async install(source: string): Promise<string> {
+		return (await connectPackageDaemon(this.stateDirectory)).install(source);
+	}
+
+	async remove(source: string): Promise<string> {
+		return new PackageDaemonInstaller(await connectPackageDaemon(this.stateDirectory)).remove(source);
+	}
+}
+
+export class DaemonRegistry implements Registry {
+	private readonly client: PackageDaemonClient;
+
+	constructor(base: string, token: string, transport: FetchTransport = fetch) {
+		this.client = new PackageDaemonClient(base, token, transport);
 	}
 
 	async search(query: string, limit: number): Promise<SearchPage> {
-		const body = await this.get<{ results: SearchPage["results"]; total: number }>(
-			`/search?q=${encodeURIComponent(query)}&limit=${limit}`,
-		);
+		const body = await this.client.search(query, limit);
 		return { results: body.results, total: body.total };
 	}
 
-	async searchPage(query: string, from: number, size: number): Promise<SearchPage> {
-		// The daemon clamps to 50; page through it for bulk reads.
+	async searchPage(query: string, _from: number, size: number): Promise<SearchPage> {
 		return this.search(query, size).catch(() => ({ results: [], total: 0 }));
 	}
 
 	async searchAll(): Promise<never> {
-		// Bulk sync runs inside the daemon against the direct registry;
-		// the proxy never paginates the full universe through the clamp.
 		throw new Error("searchAll is not supported via the daemon proxy");
 	}
 
-	async info(name: string): Promise<PkgInfo> {
-		return this.get<PkgInfo>(`/info?name=${encodeURIComponent(name)}`);
+	info(name: string): Promise<PkgInfo> {
+		return this.client.info(name);
 	}
 }
 
@@ -72,6 +181,12 @@ export async function probe(dir: string): Promise<DaemonHandle | undefined> {
 		/* dead daemon or stale files */
 	}
 	return undefined;
+}
+
+export async function connectPackageDaemon(dir: string): Promise<PackageDaemonClient> {
+	const handle = await probe(dir);
+	if (!handle) throw new Error("pi-packed daemon is unavailable; start packed.service");
+	return new PackageDaemonClient(handle.base, handle.token);
 }
 
 export async function resolveRegistry(dir: string, npmBase: string): Promise<Registry> {

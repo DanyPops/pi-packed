@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cliRun, type CliDeps } from "../src/cli.ts";
-import { DaemonRegistry, probe, resolveRegistry } from "../src/client.ts";
+import { DaemonRegistry, PackageDaemonClient, PackageDaemonInstaller, probe, resolveRegistry } from "../src/client.ts";
 import { createApp } from "../src/service.ts";
 import { saveUpdates } from "../src/watcher.ts";
 import { openDb, replaceAll, dbPath, catalogList } from "../src/db.ts";
@@ -30,8 +30,10 @@ class FakeRegistry implements Registry {
 class FakeInstaller implements Installer {
 	gotSource = "";
 	removed = "";
+	fail = false;
 	async install(source: string): Promise<string> {
 		this.gotSource = source;
+		if (this.fail) throw new Error("installer failed");
 		return `Installed ${source}`;
 	}
 	async remove(source: string): Promise<string> {
@@ -134,19 +136,24 @@ describe("CLI", () => {
 		expect((d.inst as FakeInstaller).gotSource).toBe("");
 	});
 
-	it("install runs", async () => {
+	it("install runs with stable human and JSON output", async () => {
 		const d = deps();
-		const { code, out } = await cliRun(["install", "npm:foo"], d);
-		expect(code).toBe(0);
-		expect(out).toContain("Installed npm:foo");
+		const human = await cliRun(["install", "npm:foo"], d);
+		expect(human.code).toBe(0);
+		expect(human.out).toContain("Installed npm:foo");
+		const json = await cliRun(["install", "npm:foo", "--json"], d);
+		expect(json.code).toBe(0);
+		expect(JSON.parse(json.out)).toEqual({ ok: true, source: "npm:foo", output: "Installed npm:foo" });
 	});
 
-	it("remove wants bare name", async () => {
+	it("remove wants a bare name and has stable JSON output", async () => {
 		const d = deps();
 		expect((await cliRun(["remove", "npm:foo"], d)).code).toBe(2);
 		const { code } = await cliRun(["remove", "pi-lsp"], d);
 		expect(code).toBe(0);
 		expect((d.inst as FakeInstaller).removed).toBe("npm:pi-lsp");
+		const json = await cliRun(["remove", "pi-lsp", "--json"], d);
+		expect(JSON.parse(json.out)).toEqual({ ok: true, name: "pi-lsp", output: "Removed npm:pi-lsp" });
 	});
 
 	it("unknown command → usage, code 2", async () => {
@@ -159,15 +166,18 @@ describe("CLI", () => {
 describe("daemon client", () => {
 	let server: Server<undefined>;
 	let daemonDir: string;
+	let daemonInstaller: FakeInstaller;
 
 	beforeAll(async () => {
 		daemonDir = mkdtempSync(join(tmpdir(), "packed-daemon-"));
 		writeFileSync(join(daemonDir, "token"), "daemon-tok\n");
+		daemonInstaller = new FakeInstaller();
 		const app = createApp({
 			reg: new FakeRegistry([{ name: "pi-lsp", version: "0.3.0" }]),
-			inst: new FakeInstaller(),
+			inst: daemonInstaller,
 			token: "daemon-tok",
 			stateDir: daemonDir,
+			piHome: mkdtempSync(join(tmpdir(), "packed-daemon-pi-")),
 		});
 		server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => app.fetch(req) });
 		writeFileSync(join(daemonDir, "port"), `${server.port}\n`);
@@ -191,6 +201,26 @@ describe("daemon client", () => {
 		expect(results[0]?.name).toBe("pi-lsp");
 		const info = await reg.info("pi-lsp");
 		expect(info.name).toBe("pi-lsp");
+	});
+
+	it("PackageDaemonClient exposes authenticated install, remove, and package reads", async () => {
+		const found = (await probe(daemonDir))!;
+		const client = new PackageDaemonClient(found.base, found.token);
+		expect((await client.search("lsp", 10)).results[0]?.name).toBe("pi-lsp");
+		expect((await client.info("pi-lsp")).version).toBe("1.0.0");
+		expect(await client.installed()).toEqual([]);
+		expect(await client.updates()).toEqual([]);
+		expect(await client.install("npm:pi-lsp")).toBe("Installed npm:pi-lsp");
+		expect(await client.remove("pi-lsp")).toBe("Removed npm:pi-lsp");
+		const installer = new PackageDaemonInstaller(client);
+		expect(await installer.install("npm:pi-lsp@1.0.0")).toBe("Installed npm:pi-lsp@1.0.0");
+		expect(await installer.remove("npm:pi-lsp")).toBe("Removed npm:pi-lsp");
+		expect(daemonInstaller.gotSource).toBe("npm:pi-lsp@1.0.0");
+		expect(daemonInstaller.removed).toBe("npm:pi-lsp");
+
+		daemonInstaller.fail = true;
+		await expect(client.install("npm:missing")).rejects.toThrow("installer failed");
+		daemonInstaller.fail = false;
 	});
 
 	it("resolveRegistry prefers daemon, falls back direct", async () => {

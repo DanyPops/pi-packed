@@ -31,8 +31,8 @@ usage:
   packed mirror [--json]                       sync upstream into the local SQLite index
   packed installed [--json]                    installed pi packages
   packed catalog [--json]                      local package index (apt-cache stats)
-  packed install <source>                      pi install npm:|git:|https://…
-  packed remove <name>                         remove by bare npm name
+  packed install <source> [--json]             pi install npm:|git:|https://… via daemon
+  packed remove <name> [--json]                remove by bare npm name via daemon
   packed serve                                 run the long-running daemon
   packed service                               print a systemd user unit
   packed version                               print version
@@ -185,27 +185,31 @@ const commands: Record<string, { usage: string; run: Command }> = {
 	},
 
 	install: {
-		usage: "packed install npm:<pkg>[@ver] | git:<host>/<owner>/<repo>[@ref] | https://…",
-		async run(_rest, d, _flags, pos) {
+		usage: "packed install npm:<pkg>[@ver] | git:<host>/<owner>/<repo>[@ref] | https://… [--json]",
+		async run(_rest, d, flags, pos) {
 			const source = pos[0] ?? "";
 			if (!SOURCE_RE.test(source)) return usageErr(`usage: ${commands["install"]!.usage}\n`);
 			try {
-				return ok((await d.inst.install(source)) + "\n");
+				const output = await d.inst.install(source);
+				return flags.json ? ok(`${JSON.stringify({ ok: true, source, output })}\n`) : ok(`${output}\n`);
 			} catch (e) {
-				return fail(`${e instanceof Error ? e.message : e}\n`);
+				const error = e instanceof Error ? e.message : String(e);
+				return flags.json ? fail(`${JSON.stringify({ ok: false, source, error })}\n`) : fail(`${error}\n`);
 			}
 		},
 	},
 
 	remove: {
-		usage: "packed remove <name>  (bare npm name, e.g. pi-lsp or @scope/pkg)",
-		async run(_rest, d, _flags, pos) {
+		usage: "packed remove <name> [--json]  (bare npm name, e.g. pi-lsp or @scope/pkg)",
+		async run(_rest, d, flags, pos) {
 			const name = pos[0] ?? "";
 			if (!NAME_RE.test(name)) return usageErr(`usage: ${commands["remove"]!.usage}\n`);
 			try {
-				return ok((await d.inst.remove(`npm:${name}`)) + "\n");
+				const output = await d.inst.remove(`npm:${name}`);
+				return flags.json ? ok(`${JSON.stringify({ ok: true, name, output })}\n`) : ok(`${output}\n`);
 			} catch (e) {
-				return fail(`${e instanceof Error ? e.message : e}\n`);
+				const error = e instanceof Error ? e.message : String(e);
+				return flags.json ? fail(`${JSON.stringify({ ok: false, name, error })}\n`) : fail(`${error}\n`);
 			}
 		},
 	},
@@ -273,8 +277,7 @@ if (import.meta.main) {
 	} else {
 		const { stateDir } = await import("./state.ts");
 		const { defaultPiHome } = await import("./installed.ts");
-		const { resolveRegistry } = await import("./client.ts");
-		const { ExecInstaller } = await import("./install.ts");
+		const { DaemonBackedInstaller, resolveRegistry } = await import("./client.ts");
 		const dir = stateDir();
 		// mirror talks to UPSTREAM, not the daemon cache — apt update semantics.
 		const reg =
@@ -283,7 +286,7 @@ if (import.meta.main) {
 				: await resolveRegistry(dir, NPM_REGISTRY_BASE);
 		const { code, out } = await cliRun(args, {
 			reg,
-			inst: new ExecInstaller(),
+			inst: new DaemonBackedInstaller(dir),
 			stateDir: dir,
 			piHome: defaultPiHome(),
 		});

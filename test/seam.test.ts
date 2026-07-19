@@ -1,40 +1,42 @@
-import { describe, it, expect } from "bun:test";
-import { mergeRows, filterRows, visibleRows, nextMode, formatUpdateNotice } from "../extension/src/model.ts";
+import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { filterRows, formatUpdateNotice, mergeRows, nextMode, visibleRows } from "../extension/src/model.ts";
+import { createNatives, type PackageDaemonPort } from "../extension/src/packed.ts";
+
+const installed = [
+	{ name: "pi-extension-manager", pinned: "0.8.2" },
+	{ name: "pi-lsp", installed: "0.3.0" },
+	{ name: "@scope/pkg", pinned: "1.0.0" },
+];
 
 describe("model (seam)", () => {
-	const installed = [
-		{ name: "pi-extension-manager", pinned: "0.8.2" },
-		{ name: "pi-lsp", installed: "0.3.0" },
-		{ name: "@scope/pkg", pinned: "1.0.0" },
-	];
-
 	it("mergeRows joins update info, prefers pinned version", () => {
 		const rows = mergeRows(installed, [{ name: "pi-lsp", installed: "0.3.0", latest: "0.4.0" }]);
 		expect(rows).toHaveLength(3);
-		const lsp = rows.find((r) => r.name === "pi-lsp")!;
+		const lsp = rows.find((row) => row.name === "pi-lsp")!;
 		expect(lsp.hasUpdate).toBe(true);
 		expect(lsp.latest).toBe("0.4.0");
 		expect(lsp.version).toBe("0.3.0");
-		const em = rows.find((r) => r.name === "pi-extension-manager")!;
-		expect(em.hasUpdate).toBe(false);
-		expect(em.version).toBe("0.8.2");
+		const manager = rows.find((row) => row.name === "pi-extension-manager")!;
+		expect(manager.hasUpdate).toBe(false);
+		expect(manager.version).toBe("0.8.2");
 	});
 
 	it("mergeRows sorts by name", () => {
 		const rows = mergeRows(installed, []);
-		expect(rows.map((r) => r.name)).toEqual(["@scope/pkg", "pi-extension-manager", "pi-lsp"]);
+		expect(rows.map((row) => row.name)).toEqual(["@scope/pkg", "pi-extension-manager", "pi-lsp"]);
 	});
 
 	it("filterRows is case-insensitive substring", () => {
 		const rows = mergeRows(installed, []);
-		expect(filterRows(rows, "LSP").map((r) => r.name)).toEqual(["pi-lsp"]);
+		expect(filterRows(rows, "LSP").map((row) => row.name)).toEqual(["pi-lsp"]);
 		expect(filterRows(rows, "")).toHaveLength(3);
 	});
 
 	it("visibleRows modes", () => {
 		const rows = mergeRows(installed, [{ name: "pi-lsp", installed: "0.3.0", latest: "0.4.0" }]);
 		expect(visibleRows(rows, "all")).toHaveLength(3);
-		expect(visibleRows(rows, "updates").map((r) => r.name)).toEqual(["pi-lsp"]);
+		expect(visibleRows(rows, "updates").map((row) => row.name)).toEqual(["pi-lsp"]);
 		expect(nextMode("all")).toBe("updates");
 		expect(nextMode("updates")).toBe("all");
 	});
@@ -50,59 +52,63 @@ describe("model (seam)", () => {
 	});
 });
 
-// packed.ts native client — temp env + real SQLite mirror.
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { openDb, replaceAll, dbPath } from "../src/db.ts";
-import { createNatives } from "../extension/src/packed.ts";
-import type { Pkg } from "../src/ports.ts";
+class FakePackageDaemon implements PackageDaemonPort {
+	calls: Array<{ operation: string; input?: unknown }> = [];
 
-const savedEnv = { home: process.env["PI_PACKED_HOME"], pi: process.env["PI_PACKED_PI_HOME"] };
-function restoreEnv(): void {
-	if (savedEnv.home === undefined) delete process.env["PI_PACKED_HOME"];
-	else process.env["PI_PACKED_HOME"] = savedEnv.home;
-	if (savedEnv.pi === undefined) delete process.env["PI_PACKED_PI_HOME"];
-	else process.env["PI_PACKED_PI_HOME"] = savedEnv.pi;
-}
-
-describe("packed natives (in-process)", () => {
-	function setupEnv(pkgs: Pkg[]) {
-		const stateDir = mkdtempSync(join(tmpdir(), "packed-seam-"));
-		const piHome = mkdtempSync(join(tmpdir(), "packed-seam-pi-"));
-		writeFileSync(
-			join(piHome, "settings.json"),
-			JSON.stringify({ packages: ["npm:pi-extension-manager@0.8.2"] }),
-		);
-		const db = openDb(dbPath(stateDir));
-		replaceAll(db, pkgs, "test");
-		db.close();
-		process.env["PI_PACKED_HOME"] = stateDir;
-		process.env["PI_PACKED_PI_HOME"] = piHome;
+	async search(query: string, limit: number, offline = false) {
+		this.calls.push({ operation: "search", input: { query, limit, offline } });
+		return { query, total: 1, results: [{ name: "pi-lsp", version: "1.0.0" }] };
 	}
 
-	it("updates() computes drift from the mirror, in-process", async () => {
-		setupEnv([{ name: "pi-extension-manager", version: "0.9.0" }]);
-		const natives = await createNatives();
-		const updates = await natives.updates();
-		expect(updates).toHaveLength(1);
-		expect(updates[0]).toMatchObject({ name: "pi-extension-manager", installed: "0.8.2", latest: "0.9.0" });
-		restoreEnv();
+	async info(name: string) {
+		this.calls.push({ operation: "info", input: { name } });
+		return { name, version: "1.0.0" };
+	}
+
+	async installed() {
+		this.calls.push({ operation: "installed" });
+		return [{ name: "pi-lsp", pinned: "1.0.0" }];
+	}
+
+	async updates() {
+		this.calls.push({ operation: "updates" });
+		return [{ name: "pi-lsp", installed: "1.0.0", latest: "1.1.0" }];
+	}
+
+	async install(source: string) {
+		this.calls.push({ operation: "install", input: { source } });
+		return `Installed ${source}`;
+	}
+
+	async remove(name: string) {
+		this.calls.push({ operation: "remove", input: { name } });
+		return `Removed ${name}`;
+	}
+}
+
+describe("packed extension seam", () => {
+	it("routes every operation through the authenticated daemon port", async () => {
+		const daemon = new FakePackageDaemon();
+		const natives = await createNatives(async () => daemon);
+
+		expect((await natives.search("lsp", 10)).results[0]?.name).toBe("pi-lsp");
+		expect((await natives.searchOffline("lsp", 5)).results[0]?.name).toBe("pi-lsp");
+		expect((await natives.info("pi-lsp")).version).toBe("1.0.0");
+		expect(await natives.installed()).toHaveLength(1);
+		expect(await natives.updates()).toHaveLength(1);
+		expect(await natives.install("npm:pi-lsp@1.0.0")).toContain("Installed");
+		expect(await natives.remove("pi-lsp")).toContain("Removed");
+		expect(daemon.calls.map((call) => call.operation)).toEqual([
+			"search", "search", "info", "installed", "updates", "install", "remove",
+		]);
+		expect(daemon.calls[1]?.input).toEqual({ query: "lsp", limit: 5, offline: true });
 	});
 
-	it("installed() reads pi settings, in-process", async () => {
-		setupEnv([]);
-		const natives = await createNatives();
-		const installed = await natives.installed();
-		expect(installed).toEqual([{ name: "pi-extension-manager", pinned: "0.8.2", installed: undefined }]);
-		restoreEnv();
-	});
-
-	it("searchOffline() queries the mirror via FTS", async () => {
-		setupEnv([{ name: "pi-lsp", version: "1", description: "LSP tools" }]);
-		const natives = await createNatives();
-		const r = await natives.searchOffline("lsp", 10);
-		expect(r.results.map((p) => p.name)).toEqual(["pi-lsp"]);
-		restoreEnv();
+	it("contains no Bun-only installer or direct SQLite access", () => {
+		const source = readFileSync(new URL("../extension/src/packed.ts", import.meta.url), "utf8");
+		expect(source).not.toContain("Bun.");
+		expect(source).not.toContain("ExecInstaller");
+		expect(source).not.toContain("openDb");
+		expect(source).not.toContain("db.ts");
 	});
 });
