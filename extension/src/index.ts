@@ -1,7 +1,7 @@
 /**
  * pi-packed — Pi extension seam.
  *
- * Thin by design: registers agent tools (pkg_search/pkg_info/pkg_install),
+ * Thin by design: registers agent tools (pkg_search/pkg_info/pkg_install/pkg_update/pkg_remove),
  * the /packages command, and a session_start update notification. ALL logic
  * lives in the Bun service (src/): registry access, caching, watcher,
  * catalog sync, install execution.

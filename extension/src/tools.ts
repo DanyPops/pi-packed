@@ -51,6 +51,21 @@ export async function installPackageWithPolicy(
 	}
 }
 
+export async function updatePackageWithPolicy(
+	source: string,
+	natives: Pick<Natives, "security" | "update">,
+	ctx: ApprovalContext,
+) {
+	try {
+		const approval = await approvePackageOperation("update", `pi update --extension ${source}`, natives, ctx);
+		if (!approval.allowed) return text(approval.message ?? "update denied");
+		const out = await natives.update(source, approval.approved);
+		return text(`${out || `Updated ${source}.`} Reload with /reload to activate.`);
+	} catch (error) {
+		return text(`update failed: ${error instanceof Error ? error.message : error}`);
+	}
+}
+
 export async function removePackageWithPolicy(
 	name: string,
 	natives: Pick<Natives, "security" | "remove">,
@@ -118,6 +133,16 @@ export function registerTools(pi: ExtensionAPI, natives: Natives): void {
 		parameters: Type.Object({ source: Type.String({ description: "npm:, git:, or https source" }) }),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			return installPackageWithPolicy(params.source, natives, ctx);
+		},
+	});
+
+	pi.registerTool({
+		name: "pkg_update",
+		label: "Pi Package Update",
+		description: "Update one configured Pi package through Pi's documented update command. Operation-aware approval is secure by default.",
+		parameters: Type.Object({ source: Type.String({ description: "configured npm:, git:, or https source" }) }),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			return updatePackageWithPolicy(params.source, natives, ctx);
 		},
 	});
 

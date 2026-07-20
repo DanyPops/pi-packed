@@ -21,6 +21,7 @@ export interface PackageDaemonPort {
 	setMutationApproval(value: MutationApproval, approved?: boolean): Promise<SecuritySettings>;
 	install(source: string, approved?: boolean): Promise<string>;
 	remove(name: string, approved?: boolean): Promise<string>;
+	update(source: string, approved?: boolean): Promise<string>;
 }
 
 interface MutationResponse {
@@ -113,6 +114,15 @@ export class PackageDaemonClient implements PackageDaemonPort {
 		if (!result.ok) throw new PackageDaemonError(result.output || `failed to remove ${name}`, "remove");
 		return result.output;
 	}
+
+	async update(source: string, approved = false): Promise<string> {
+		const result = await this.request<MutationResponse>("/update", {
+			method: "POST",
+			body: JSON.stringify({ source, approved }),
+		});
+		if (!result.ok) throw new PackageDaemonError(result.output || `failed to update ${source}`, "update");
+		return result.output;
+	}
 }
 
 export class PackageDaemonInstaller implements Installer {
@@ -127,6 +137,10 @@ export class PackageDaemonInstaller implements Installer {
 			throw new PackageDaemonError("daemon package removal requires an npm: source", "remove");
 		}
 		return this.client.remove(source.slice(4), options?.approved);
+	}
+
+	update(source: string, options?: { approved?: boolean }): Promise<string> {
+		return this.client.update(source, options?.approved);
 	}
 }
 
@@ -149,6 +163,10 @@ export class DaemonBackedInstaller implements Installer {
 
 	async remove(source: string, options?: { approved?: boolean }): Promise<string> {
 		return new PackageDaemonInstaller(await connectPackageDaemon(this.stateDirectory)).remove(source, options);
+	}
+
+	async update(source: string, options?: { approved?: boolean }): Promise<string> {
+		return (await connectPackageDaemon(this.stateDirectory)).update(source, options?.approved);
 	}
 }
 

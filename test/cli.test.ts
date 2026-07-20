@@ -30,6 +30,7 @@ class FakeRegistry implements Registry {
 class FakeInstaller implements Installer {
 	gotSource = "";
 	removed = "";
+	updated = "";
 	fail = false;
 	approved = false;
 	async install(source: string, options?: { approved?: boolean }): Promise<string> {
@@ -42,6 +43,11 @@ class FakeInstaller implements Installer {
 		this.removed = source;
 		this.approved = options?.approved === true;
 		return `Removed ${source}`;
+	}
+	async update(source: string, options?: { approved?: boolean }): Promise<string> {
+		this.updated = source;
+		this.approved = options?.approved === true;
+		return `Updated ${source}`;
 	}
 }
 
@@ -171,6 +177,17 @@ describe("CLI", () => {
 		expect(JSON.parse(json.out)).toEqual({ ok: true, source: "npm:foo", output: "Installed npm:foo" });
 	});
 
+	it("update delegates one configured source with stable output and approval", async () => {
+		const d = deps();
+		expect((await cliRun(["update", "npm:foo"], d)).code).toBe(1);
+		const human = await cliRun(["update", "npm:foo", "--approve"], d);
+		expect(human.out).toContain("Updated npm:foo");
+		expect((d.inst as FakeInstaller).updated).toBe("npm:foo");
+		expect((d.inst as FakeInstaller).approved).toBe(true);
+		const json = await cliRun(["update", "npm:foo", "--approve", "--json"], d);
+		expect(JSON.parse(json.out)).toEqual({ ok: true, source: "npm:foo", output: "Updated npm:foo", reloadRequired: true });
+	});
+
 	it("remove wants a bare name and has stable JSON output", async () => {
 		const d = deps();
 		expect((await cliRun(["remove", "npm:foo"], d)).code).toBe(2);
@@ -240,9 +257,11 @@ describe("daemon client", () => {
 		await expect(client.install("npm:pi-lsp")).rejects.toThrow("approval required");
 		expect(await client.install("npm:pi-lsp", true)).toBe("Installed npm:pi-lsp");
 		expect(await client.remove("pi-lsp", true)).toBe("Removed npm:pi-lsp");
+		expect(await client.update("npm:pi-lsp", true)).toBe("Updated npm:pi-lsp");
 		const installer = new PackageDaemonInstaller(client);
 		expect(await installer.install("npm:pi-lsp@1.0.0", { approved: true })).toBe("Installed npm:pi-lsp@1.0.0");
 		expect(await installer.remove("npm:pi-lsp", { approved: true })).toBe("Removed npm:pi-lsp");
+		expect(await installer.update("npm:pi-lsp", { approved: true })).toBe("Updated npm:pi-lsp");
 		expect(await client.setMutationApproval("never", true)).toEqual({ mutationApproval: "never" });
 		expect(daemonInstaller.gotSource).toBe("npm:pi-lsp@1.0.0");
 		expect(daemonInstaller.removed).toBe("npm:pi-lsp");

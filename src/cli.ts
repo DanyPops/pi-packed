@@ -35,6 +35,7 @@ usage:
   packed search <query> [--offline] [--json]   search npm (or the local mirror with --offline)
   packed info <name> [--json]                  package details
   packed updates [--json]                      updates per the local mirror
+  packed update <source> [--approve] [--json]  update one configured package through Pi
   packed mirror [--json]                       sync upstream into the local SQLite index
   packed installed [--json]                    installed pi packages
   packed catalog [--json]                      local package index (apt-cache stats)
@@ -98,6 +99,7 @@ const PACKAGE_COMMAND_OPERATIONS: Record<string, PackageOperation | undefined> =
 	installed: "installed",
 	catalog: "catalog",
 	updates: "updates",
+	update: "update",
 	mirror: "mirror",
 	install: "install",
 	remove: "remove",
@@ -237,8 +239,27 @@ const commands: Record<string, { usage: string; run: Command }> = {
 		},
 	},
 
+	update: {
+		usage: "packed update <configured-source> [--approve] [--json]",
+		async run(_rest, d, flags, pos) {
+			const source = pos[0] ?? "";
+			if (!SOURCE_RE.test(source)) return usageErr(`usage: ${commands["update"]!.usage}\n`);
+			try {
+				const output = await d.inst.update(source, { approved: flags.approved });
+				return flags.json
+					? ok(`${JSON.stringify({ ok: true, source, output, reloadRequired: true })}\n`)
+					: ok(`${output}\nReload Pi with /reload to activate the updated package.\n`);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return flags.json
+					? fail(`${JSON.stringify({ ok: false, source, error: message, reloadRequired: false })}\n`)
+					: fail(`${message}\n`);
+			}
+		},
+	},
+
 	remove: {
-		usage: "packed remove <name> [--json]  (bare npm name, e.g. pi-lsp or @scope/pkg)",
+		usage: "packed remove <name> [--approve] [--json]  (bare npm name, e.g. pi-lsp or @scope/pkg)",
 		async run(_rest, d, flags, pos) {
 			const name = pos[0] ?? "";
 			if (!NAME_RE.test(name)) return usageErr(`usage: ${commands["remove"]!.usage}\n`);
@@ -299,7 +320,7 @@ export async function cliRun(args: string[], d: CliDeps): Promise<CliResult> {
 	if (!cmd) return usageErr(`unknown command "${name}"\n${USAGE}`);
 	const { flags, pos } = parseFlags(rest);
 	try {
-		const validMutationInput = name === "install"
+		const validMutationInput = name === "install" || name === "update"
 			? SOURCE_RE.test(pos[0] ?? "")
 			: name === "remove" ? NAME_RE.test(pos[0] ?? "")
 				: name === "security" ? (pos[0] === undefined || pos[0] === "always" || pos[0] === "never")

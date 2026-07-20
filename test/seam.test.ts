@@ -94,6 +94,11 @@ class FakePackageDaemon implements PackageDaemonPort {
 		this.calls.push({ operation: "remove", input: { name, approved } });
 		return `Removed ${name}`;
 	}
+
+	async update(source: string, approved = false) {
+		this.calls.push({ operation: "update", input: { source, approved } });
+		return `Updated ${source}`;
+	}
 }
 
 describe("packed extension seam", () => {
@@ -110,8 +115,9 @@ describe("packed extension seam", () => {
 		expect((await natives.setMutationApproval("never", true)).mutationApproval).toBe("never");
 		expect(await natives.install("npm:pi-lsp@1.0.0", true)).toContain("Installed");
 		expect(await natives.remove("pi-lsp", true)).toContain("Removed");
+		expect(await natives.update("npm:pi-lsp", true)).toContain("Updated");
 		expect(daemon.calls.map((call) => call.operation)).toEqual([
-			"search", "search", "info", "installed", "updates", "security", "setMutationApproval", "install", "remove",
+			"search", "search", "info", "installed", "updates", "security", "setMutationApproval", "install", "remove", "update",
 		]);
 		expect(daemon.calls[1]?.input).toEqual({ query: "lsp", limit: 5, offline: true });
 	});

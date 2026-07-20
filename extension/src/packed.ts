@@ -30,6 +30,7 @@ export interface Natives {
 	setMutationApproval(value: MutationApproval, approved?: boolean): Promise<SecuritySettings>;
 	install(source: string, approved?: boolean): Promise<string>;
 	remove(name: string, approved?: boolean): Promise<string>;
+	update(source: string, approved?: boolean): Promise<string>;
 }
 
 export type PackageDaemonConnector = () => Promise<PackageDaemonPort>;
@@ -65,5 +66,6 @@ export async function createNatives(connect: PackageDaemonConnector = connectDef
 		setMutationApproval: (value, approved) => call((daemon) => daemon.setMutationApproval(value, approved)),
 		install: (source, approved) => call((daemon) => daemon.install(source, approved)),
 		remove: (name, approved) => call((daemon) => daemon.remove(name, approved)),
+		update: (source, approved) => call((daemon) => daemon.update(source, approved)),
 	};
 }

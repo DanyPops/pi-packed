@@ -41,6 +41,7 @@ export interface Registry {
 export interface Installer {
 	install(source: string, options?: { approved?: boolean }): Promise<string>;
 	remove(source: string, options?: { approved?: boolean }): Promise<string>;
+	update(source: string, options?: { approved?: boolean }): Promise<string>;
 }
 
 export interface InstalledPkg {

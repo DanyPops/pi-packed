@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { installPackageWithPolicy, removePackageWithPolicy } from "../extension/src/tools.ts";
+import { installPackageWithPolicy, removePackageWithPolicy, updatePackageWithPolicy } from "../extension/src/tools.ts";
 
 describe("native package mutation permission policy", () => {
 	it("requires confirmation for install under the secure default", async () => {
@@ -15,6 +15,19 @@ describe("native package mutation permission policy", () => {
 		expect(confirms).toBe(1);
 		expect(installs).toBe(0);
 		expect(result.content[0]?.text).toContain("cancelled");
+	});
+
+	it("requires the same confirmation for update and returns reload guidance", async () => {
+		let updates = 0;
+		const result = await updatePackageWithPolicy("npm:pkg", {
+			async security() { return { mutationApproval: "always" }; },
+			async update(_source, approved) { expect(approved).toBe(true); updates += 1; return "updated"; },
+		}, {
+			hasUI: true,
+			ui: { async confirm(_title, message) { expect(message).toContain("pi update --extension npm:pkg"); return true; } },
+		});
+		expect(updates).toBe(1);
+		expect(result.content[0]?.text).toContain("/reload");
 	});
 
 	it("requires the same confirmation for remove", async () => {

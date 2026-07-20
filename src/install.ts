@@ -30,4 +30,8 @@ export class ExecInstaller implements Installer {
 	remove(source: string, _options?: { approved?: boolean }): Promise<string> {
 		return this.run(["remove", source]);
 	}
+
+	update(source: string, _options?: { approved?: boolean }): Promise<string> {
+		return this.run(["update", "--extension", source]);
+	}
 }

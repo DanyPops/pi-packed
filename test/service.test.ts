@@ -37,6 +37,7 @@ class FakeRegistry implements Registry {
 class FakeInstaller implements Installer {
 	gotSource = "";
 	removed = "";
+	updated = "";
 	output = "ok";
 	fail = false;
 	async install(source: string): Promise<string> {
@@ -46,6 +47,10 @@ class FakeInstaller implements Installer {
 	}
 	async remove(source: string): Promise<string> {
 		this.removed = source;
+		return this.output;
+	}
+	async update(source: string): Promise<string> {
+		this.updated = source;
 		return this.output;
 	}
 }
@@ -199,6 +204,23 @@ describe("service app", () => {
 		const body = await res.json() as any;
 		expect(body.ok).toBe(false);
 		expect(body.output).toContain("npm ERR! 404");
+	});
+
+	it("POST /update validates, authorizes, and delegates one Pi package source", async () => {
+		const inst = new FakeInstaller();
+		const app = createApp(deps({ inst }));
+		const denied = await app.fetch(new Request("http://x/update", {
+			method: "POST", headers: { ...auth, "content-type": "application/json" },
+			body: JSON.stringify({ source: "npm:pi-lsp" }),
+		}));
+		expect(denied.status).toBe(403);
+		const allowed = await app.fetch(new Request("http://x/update", {
+			method: "POST", headers: { ...auth, "content-type": "application/json" },
+			body: JSON.stringify({ source: "npm:pi-lsp", approved: true }),
+		}));
+		expect(allowed.status).toBe(200);
+		expect(await allowed.json()).toEqual({ ok: true, source: "npm:pi-lsp", output: "ok", reloadRequired: true });
+		expect(inst.updated).toBe("npm:pi-lsp");
 	});
 
 	it("GET /updates serves the watcher snapshot", async () => {

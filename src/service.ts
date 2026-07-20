@@ -166,6 +166,29 @@ export function createApp(deps: Deps): { fetch: (req: Request) => Promise<Respon
 			}
 		}
 
+		if (path === "/update" && req.method === "POST") {
+			let source = "";
+			let approved = false;
+			try {
+				const body = (await req.json()) as { source?: unknown; approved?: unknown };
+				source = String(body.source ?? "");
+				approved = body.approved === true;
+			} catch {
+				/* fall through to validation */
+			}
+			if (!SOURCE_RE.test(source)) {
+				return err(400, "invalid source; want a configured npm:, git:, or https package source");
+			}
+			const denied = authorize("update", approved);
+			if (denied) return denied;
+			try {
+				const output = await deps.inst.update(source, { approved });
+				return json({ ok: true, source, output, reloadRequired: true });
+			} catch (error) {
+				return json({ ok: false, source, output: error instanceof Error ? error.message : String(error), reloadRequired: false });
+			}
+		}
+
 		if (path === "/updates" && req.method === "GET") {
 			const snap = await loadUpdates(deps.stateDir);
 			return json(snap ?? { updates: [] });

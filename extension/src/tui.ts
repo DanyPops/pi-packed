@@ -72,10 +72,10 @@ export async function showPackages(ctx: ExtensionCommandContext, natives: Native
 					continue;
 				}
 				ctx.ui.notify(`Updating ${row.name}…`, "info");
-				await natives.install(`npm:${row.name}@${row.latest}`, approval.approved);
-				ctx.ui.notify(`Updated ${row.name} to ${row.latest} (takes effect after /reload)`, "info");
-				row.version = row.latest ?? row.version;
-				row.hasUpdate = false;
+				await natives.update(`npm:${row.name}`, approval.approved);
+				ctx.ui.notify(`Updated ${row.name} to ${row.latest}; reloading Pi resources`, "info");
+				await ctx.reload();
+				return;
 			} catch (e) {
 				ctx.ui.notify(`update failed: ${e instanceof Error ? e.message : e}`, "error");
 			}

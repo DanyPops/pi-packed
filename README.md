@@ -10,7 +10,7 @@ inside the supervised Bun daemon.
 
 ```text
 ┌─ Pi extension (Node-compatible) ──────────────┐
-│ pkg_search · pkg_info · pkg_install · pkg_remove│
+│ pkg_search · pkg_info · pkg_install/update/remove│
 │ /packages · /packed permission settings         │
 │ operation-aware approval · no Bun/SQLite access │
 └──────────────────┬────────────────────────────┘
@@ -46,6 +46,7 @@ Packages execute arbitrary code and mutate Pi settings/install roots. One daemon
 | `packed search <q> [--offline] [--limit N] [--json]` | Search npm or the local mirror, scoped to `keywords:pi-package` |
 | `packed info <name> [--json]` | Show version, repository, Pi manifest, size, and license |
 | `packed updates [--json]` | Show drift from the local mirror |
+| `packed update <source> [--approve] [--json]` | Update one configured source through `pi update --extension` |
 | `packed mirror [--json]` | Refresh the SQLite package index |
 | `packed installed [--json]` | Read Pi's installed package declarations |
 | `packed catalog [--json]` | Inspect the local package index |
@@ -81,6 +82,7 @@ The daemon listens on loopback only.
 | `GET` | `/updates` |
 | `GET` | `/catalog` |
 | `POST` | `/install` with `{ "source": "...", "approved": true }` |
+| `POST` | `/update` with `{ "source": "...", "approved": true }` |
 | `POST` | `/remove` with `{ "name": "...", "approved": true }` |
 
 State defaults to `~/.cache/pi-packed/` and contains `token`, `port`,
