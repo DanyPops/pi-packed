@@ -3,6 +3,9 @@
   "version": "0.5.0",
   "description": "Package service for the Pi agent: search/info/install/updates + /packages TUI, backed by a long-running Bun service",
   "type": "module",
+  "bin": {
+    "packed": "src/cli.ts"
+  },
   "keywords": [
     "pi-package"
   ],

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cliRun, type CliDeps } from "../src/cli.ts";
@@ -66,6 +66,12 @@ function deps(over: Partial<CliDeps> = {}): CliDeps {
 }
 
 describe("CLI", () => {
+	it("publishes an executable packed binary", () => {
+		const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { bin?: Record<string, string> };
+		expect(manifest.bin).toEqual({ packed: "src/cli.ts" });
+		expect(readFileSync(new URL("../src/cli.ts", import.meta.url), "utf8").startsWith("#!/usr/bin/env bun\n")).toBe(true);
+	});
+
 	it("security reads and writes stable JSON through the daemon port", async () => {
 		let mutationApproval: "always" | "never" = "always";
 		const d = deps({

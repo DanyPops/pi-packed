@@ -1,3 +1,4 @@
+#!/usr/bin/env bun
 /**
  * cli.ts — second driving adapter (humans drive the same hexagon ports).
  * cliRun is pure: ({code, out}) in, no I/O — the entry point prints.
