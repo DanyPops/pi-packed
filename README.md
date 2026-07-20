@@ -3,7 +3,7 @@
 Package service for the [Pi](https://github.com/earendil-works/pi) agent —
 DNF-style package management that both **you** and the **agent** can use.
 
-The agent gets native tools (`pkg_search`, `pkg_info`, `pkg_install`); you get
+The agent gets native tools (`pkg_search`, `pkg_info`, `pkg_install`, `pkg_update`, and `pkg_remove`); you get
 the `packed` CLI and an interactive `/packages` TUI. The extension is a thin,
 Node-compatible client. Registry access, SQLite, and package execution remain
 inside the supervised Bun daemon.
@@ -65,6 +65,16 @@ Guarded CLI mutations require `--approve` under the secure default. This is pi-p
 
 Failures use exit code 1 and `{ "ok": false, ... , "error": "..." }` with
 credential-safe diagnostics. Usage errors use exit code 2.
+
+## Native tool presentation
+
+Native tools keep three output contracts independent:
+
+- model-facing `content` is concise, credential-safe, and capped at 2,000 characters;
+- renderer-facing `details` uses a versioned bounded package DTO and never retains raw npm metadata or manifest values;
+- CLI human output and `--json` remain presenters over daemon DTOs and do not parse either native-tool channel.
+
+Calls and results have themed collapsed and expanded renderers. Missing or legacy details fall back to model content, while daemon and execution failures are thrown through Pi's native error channel. Package approval refusal remains a normal `cancelled` or `denied` outcome.
 
 ## Service API
 

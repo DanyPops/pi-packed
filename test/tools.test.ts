@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { installPackageWithPolicy, removePackageWithPolicy, updatePackageWithPolicy } from "../extension/src/tools.ts";
+import { installPackageWithPolicy, registerTools, removePackageWithPolicy, updatePackageWithPolicy } from "../extension/src/tools.ts";
+import type { Natives } from "../extension/src/packed.ts";
 
 describe("native package mutation permission policy", () => {
 	it("requires confirmation for install under the secure default", async () => {
@@ -15,6 +16,8 @@ describe("native package mutation permission policy", () => {
 		expect(confirms).toBe(1);
 		expect(installs).toBe(0);
 		expect(result.content[0]?.text).toContain("cancelled");
+		if (result.details.kind !== "mutation") throw new Error("expected mutation details");
+		expect(result.details.status).toBe("cancelled");
 	});
 
 	it("requires the same confirmation for update and returns reload guidance", async () => {
@@ -43,6 +46,28 @@ describe("native package mutation permission policy", () => {
 		expect(result.content[0]?.text).toBe("removed");
 	});
 
+	it("reports non-interactive approval refusal as denied rather than cancelled", async () => {
+		const result = await installPackageWithPolicy("npm:pkg", {
+			async security() { return { mutationApproval: "always" }; },
+			async install() { throw new Error("must not install"); },
+		}, {
+			hasUI: false,
+			ui: { async confirm() { return false; } },
+		});
+		if (result.details.kind !== "mutation") throw new Error("expected mutation details");
+		expect(result.details.status).toBe("denied");
+	});
+
+	it("propagates daemon failures through Pi's native error channel", async () => {
+		await expect(installPackageWithPolicy("npm:pkg", {
+			async security() { return { mutationApproval: "never" }; },
+			async install() { throw new Error("daemon unavailable"); },
+		}, {
+			hasUI: false,
+			ui: { async confirm() { return false; } },
+		})).rejects.toThrow("daemon unavailable");
+	});
+
 	it("allows the explicit never policy without UI for every guarded operation", async () => {
 		let installs = 0;
 		const result = await installPackageWithPolicy("npm:pkg", {
@@ -54,5 +79,24 @@ describe("native package mutation permission policy", () => {
 		});
 		expect(installs).toBe(1);
 		expect(result.content[0]?.text).toBe("installed");
+	});
+
+	it("registers all five tools with independent renderers and bounded details", async () => {
+		const tools: any[] = [];
+		const natives = {
+			async search() { return { query: "theme", total: 1, results: [{ name: "pkg", version: "1.0.0", description: "result" }] }; },
+			async info() { return { name: "pkg", version: "1.0.0", pi: { extensions: ["private.ts"] } }; },
+			async security() { return { mutationApproval: "never" as const }; },
+			async install() { return "installed"; },
+			async update() { return "updated"; },
+			async remove() { return "removed"; },
+		} as unknown as Natives;
+		registerTools({ registerTool(tool: unknown) { tools.push(tool); } } as any, natives);
+		expect(tools).toHaveLength(5);
+		expect(tools.every((tool) => typeof tool.renderCall === "function" && typeof tool.renderResult === "function")).toBe(true);
+		const search = tools.find((tool) => tool.name === "pkg_search");
+		const result = await search.execute("id", { query: "theme", limit: 10 });
+		expect(result.details.kind).toBe("search");
+		expect(result.content[0].text.length).toBeLessThanOrEqual(2_000);
 	});
 });

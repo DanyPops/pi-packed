@@ -12,6 +12,16 @@ export const SEARCH_MAX_LIMIT = 50;
 export const SEARCH_PAGE_SIZE = 250; // npm registry max page size
 export const PI_PACKAGE_KEYWORD = "keywords:pi-package";
 
+// --- Native tool presentation bounds ---
+export const TOOL_MODEL_CONTENT_MAX_CHARACTERS = 2_000;
+export const TOOL_DETAILS_MAX_SERIALIZED_CHARACTERS = 32_000;
+export const TOOL_DETAILS_MAX_PACKAGES = 50;
+export const TOOL_DETAILS_MAX_DESCRIPTION_CHARACTERS = 240;
+export const TOOL_DETAILS_MAX_OUTPUT_CHARACTERS = 1_000;
+export const TOOL_DETAILS_MAX_KEYWORDS = 20;
+export const TOOL_DETAILS_MAX_CAPABILITIES = 12;
+export const TOOL_COLLAPSED_PACKAGE_PREVIEW = 3;
+
 // --- Upstream etiquette (429s) ---
 export const RETRY_MAX_ATTEMPTS = 6;
 export const RETRY_BASE_DELAY_MS = 2_000; // 2+4+8+16+32s spans npm's ~60s search window
