@@ -9,9 +9,17 @@ import { TTLCache } from "./cache.ts";
 import { loadUpdates } from "./watcher.ts";
 import { readInstalledPackages, defaultPiHome } from "./installed.ts";
 import { openDb, searchLocal, catalogList, getSyncMeta, dbPath } from "./db.ts";
-import { VERSION, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT } from "./constants.ts";
+import { SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT } from "./constants.ts";
+import { VERSION } from "./version.ts";
 import { createLogger } from "./log.ts";
-import { readSecuritySettings, writeSecuritySettings, type InstallApproval } from "./security.ts";
+import {
+	assertPackagePermission,
+	PackageApprovalRequiredError,
+	readSecuritySettings,
+	writeSecuritySettings,
+	type MutationApproval,
+	type PackageOperation,
+} from "./security.ts";
 
 const log = createLogger("service");
 
@@ -31,12 +39,24 @@ function json(v: unknown, init?: ResponseInit): Response {
 	return Response.json(v, init);
 }
 
-function err(status: number, msg: string): Response {
-	return json({ error: msg }, { status });
+function err(status: number, msg: string, details: Record<string, unknown> = {}): Response {
+	return json({ error: msg, ...details }, { status });
 }
 
 export function createApp(deps: Deps): { fetch: (req: Request) => Promise<Response> } {
 	const cache = deps.cache ?? new TTLCache();
+
+	function authorize(operation: PackageOperation, approved: boolean): Response | undefined {
+		try {
+			assertPackagePermission(readSecuritySettings(deps.stateDir), operation, approved);
+			return undefined;
+		} catch (error) {
+			if (error instanceof PackageApprovalRequiredError) {
+				return err(403, error.message, { code: error.code, operation: error.operation });
+			}
+			throw error;
+		}
+	}
 
 	async function route(req: Request): Promise<Response> {
 		const url = new URL(req.url);
@@ -51,16 +71,18 @@ export function createApp(deps: Deps): { fetch: (req: Request) => Promise<Respon
 		}
 
 		if (path === "/security" && req.method === "POST") {
-			let installApproval: unknown;
+			let body: { mutationApproval?: unknown; approved?: unknown };
 			try {
-				installApproval = ((await req.json()) as { installApproval?: unknown }).installApproval;
+				body = (await req.json()) as typeof body;
 			} catch {
 				return err(400, "invalid security settings JSON");
 			}
-			if (installApproval !== "always" && installApproval !== "never") {
-				return err(400, "installApproval must be always or never");
+			if (body.mutationApproval !== "always" && body.mutationApproval !== "never") {
+				return err(400, "mutationApproval must be always or never");
 			}
-			return json(writeSecuritySettings(deps.stateDir, { installApproval: installApproval as InstallApproval }));
+			const denied = authorize("security.write", body.approved === true);
+			if (denied) return denied;
+			return json(writeSecuritySettings(deps.stateDir, { mutationApproval: body.mutationApproval as MutationApproval }));
 		}
 
 		if (path === "/search" && req.method === "GET") {
@@ -100,17 +122,21 @@ export function createApp(deps: Deps): { fetch: (req: Request) => Promise<Respon
 
 		if (path === "/remove" && req.method === "POST") {
 			let name = "";
+			let approved = false;
 			try {
-				const body = (await req.json()) as { name?: unknown };
+				const body = (await req.json()) as { name?: unknown; approved?: unknown };
 				name = String(body.name ?? "");
+				approved = body.approved === true;
 			} catch {
 				/* fall through to validation */
 			}
 			if (!NAME_RE.test(name)) {
 				return err(400, "invalid name; want a bare npm package name");
 			}
+			const denied = authorize("remove", approved);
+			if (denied) return denied;
 			try {
-				const output = await deps.inst.remove(`npm:${name}`);
+				const output = await deps.inst.remove(`npm:${name}`, { approved });
 				return json({ ok: true, name, output });
 			} catch (e) {
 				return json({ ok: false, name, output: e instanceof Error ? e.message : String(e) });
@@ -119,17 +145,21 @@ export function createApp(deps: Deps): { fetch: (req: Request) => Promise<Respon
 
 		if (path === "/install" && req.method === "POST") {
 			let source = "";
+			let approved = false;
 			try {
-				const body = (await req.json()) as { source?: unknown };
+				const body = (await req.json()) as { source?: unknown; approved?: unknown };
 				source = String(body.source ?? "");
+				approved = body.approved === true;
 			} catch {
 				/* fall through to validation */
 			}
 			if (!SOURCE_RE.test(source)) {
 				return err(400, "invalid source; want npm:<pkg>[@ver], git:<host>/<owner>/<repo>[@ref], or https://…");
 			}
+			const denied = authorize("install", approved);
+			if (denied) return denied;
 			try {
-				const output = await deps.inst.install(source);
+				const output = await deps.inst.install(source, { approved });
 				return json({ ok: true, source, output });
 			} catch (e) {
 				return json({ ok: false, source, output: e instanceof Error ? e.message : String(e) });

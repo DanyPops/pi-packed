@@ -8,7 +8,7 @@ import { join } from "node:path";
 import type { InstalledPkg, Installer, PkgInfo, Registry, SearchPage, UpdateEntry, UpdatesSnapshot } from "./ports.ts";
 import { HttpRegistry } from "./registry.ts";
 import { DAEMON_HOST, PROBE_TIMEOUT_MS, REGISTRY_FETCH_TIMEOUT_MS, PORT_FILE, TOKEN_FILE } from "./constants.ts";
-import type { InstallApproval, SecuritySettings } from "./security.ts";
+import type { MutationApproval, SecuritySettings } from "./security.ts";
 
 export type FetchTransport = (request: Request) => Promise<Response>;
 
@@ -18,9 +18,9 @@ export interface PackageDaemonPort {
 	installed(): Promise<InstalledPkg[]>;
 	updates(): Promise<UpdateEntry[]>;
 	security(): Promise<SecuritySettings>;
-	setInstallApproval(value: InstallApproval): Promise<SecuritySettings>;
-	install(source: string): Promise<string>;
-	remove(name: string): Promise<string>;
+	setMutationApproval(value: MutationApproval, approved?: boolean): Promise<SecuritySettings>;
+	install(source: string, approved?: boolean): Promise<string>;
+	remove(name: string, approved?: boolean): Promise<string>;
 }
 
 interface MutationResponse {
@@ -92,23 +92,23 @@ export class PackageDaemonClient implements PackageDaemonPort {
 		return this.request("/security");
 	}
 
-	setInstallApproval(installApproval: InstallApproval): Promise<SecuritySettings> {
-		return this.request("/security", { method: "POST", body: JSON.stringify({ installApproval }) });
+	setMutationApproval(mutationApproval: MutationApproval, approved = false): Promise<SecuritySettings> {
+		return this.request("/security", { method: "POST", body: JSON.stringify({ mutationApproval, approved }) });
 	}
 
-	async install(source: string): Promise<string> {
+	async install(source: string, approved = false): Promise<string> {
 		const result = await this.request<MutationResponse>("/install", {
 			method: "POST",
-			body: JSON.stringify({ source }),
+			body: JSON.stringify({ source, approved }),
 		});
 		if (!result.ok) throw new PackageDaemonError(result.output || `failed to install ${source}`, "install");
 		return result.output;
 	}
 
-	async remove(name: string): Promise<string> {
+	async remove(name: string, approved = false): Promise<string> {
 		const result = await this.request<MutationResponse>("/remove", {
 			method: "POST",
-			body: JSON.stringify({ name }),
+			body: JSON.stringify({ name, approved }),
 		});
 		if (!result.ok) throw new PackageDaemonError(result.output || `failed to remove ${name}`, "remove");
 		return result.output;
@@ -118,15 +118,15 @@ export class PackageDaemonClient implements PackageDaemonPort {
 export class PackageDaemonInstaller implements Installer {
 	constructor(private readonly client: PackageDaemonClient) {}
 
-	install(source: string): Promise<string> {
-		return this.client.install(source);
+	install(source: string, options?: { approved?: boolean }): Promise<string> {
+		return this.client.install(source, options?.approved);
 	}
 
-	remove(source: string): Promise<string> {
+	remove(source: string, options?: { approved?: boolean }): Promise<string> {
 		if (!source.startsWith("npm:") || source.length <= 4) {
 			throw new PackageDaemonError("daemon package removal requires an npm: source", "remove");
 		}
-		return this.client.remove(source.slice(4));
+		return this.client.remove(source.slice(4), options?.approved);
 	}
 }
 
@@ -135,20 +135,20 @@ export class DaemonBackedSecurity {
 	async security(): Promise<SecuritySettings> {
 		return (await connectPackageDaemon(this.stateDirectory)).security();
 	}
-	async setInstallApproval(value: InstallApproval): Promise<SecuritySettings> {
-		return (await connectPackageDaemon(this.stateDirectory)).setInstallApproval(value);
+	async setMutationApproval(value: MutationApproval, options?: { approved?: boolean }): Promise<SecuritySettings> {
+		return (await connectPackageDaemon(this.stateDirectory)).setMutationApproval(value, options?.approved);
 	}
 }
 
 export class DaemonBackedInstaller implements Installer {
 	constructor(private readonly stateDirectory: string) {}
 
-	async install(source: string): Promise<string> {
-		return (await connectPackageDaemon(this.stateDirectory)).install(source);
+	async install(source: string, options?: { approved?: boolean }): Promise<string> {
+		return (await connectPackageDaemon(this.stateDirectory)).install(source, options?.approved);
 	}
 
-	async remove(source: string): Promise<string> {
-		return new PackageDaemonInstaller(await connectPackageDaemon(this.stateDirectory)).remove(source);
+	async remove(source: string, options?: { approved?: boolean }): Promise<string> {
+		return new PackageDaemonInstaller(await connectPackageDaemon(this.stateDirectory)).remove(source, options);
 	}
 }
 

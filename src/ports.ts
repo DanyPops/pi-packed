@@ -39,8 +39,8 @@ export interface Registry {
 
 /** Driven port: pi CLI mutations. */
 export interface Installer {
-	install(source: string): Promise<string>;
-	remove(source: string): Promise<string>;
+	install(source: string, options?: { approved?: boolean }): Promise<string>;
+	remove(source: string, options?: { approved?: boolean }): Promise<string>;
 }
 
 export interface InstalledPkg {

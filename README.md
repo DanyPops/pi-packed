@@ -10,9 +10,9 @@ inside the supervised Bun daemon.
 
 ```text
 ┌─ Pi extension (Node-compatible) ──────────────┐
-│ pkg_search · pkg_info · pkg_install           │
-│ /packages · /packed security settings          │
-│ policy-driven approval · no Bun/SQLite access  │
+│ pkg_search · pkg_info · pkg_install · pkg_remove│
+│ /packages · /packed permission settings         │
+│ operation-aware approval · no Bun/SQLite access │
 └──────────────────┬────────────────────────────┘
                    │ authenticated loopback HTTP
 ┌─ packed.service (Bun) ────────────────────────┐
@@ -37,7 +37,7 @@ packed installed --json
 /packages
 ```
 
-Packages execute arbitrary code. `pkg_install` uses daemon-owned security settings with secure default `installApproval: always`. Open `/packed` to choose **Always require approval** or explicitly opt out with **Never require approval**. The unsafe opt-out allows agent installs without an interactive UI. `/packages` remains the package browser.
+Packages execute arbitrary code and mutate Pi settings/install roots. One daemon-owned operation policy classifies every public package operation. Install, update, remove, and security-setting changes require explicit approval by default (`mutationApproval: always`); search, info, installed, catalog, and update-status reads are bounded reads, while mirror refresh is classified maintenance. Open `/packed` to retain the recommended approval policy or deliberately choose the unsafe **Never require mutation approval** opt-out. `/packages` uses the same policy for updates and removals.
 
 ## CLI
 
@@ -49,14 +49,14 @@ Packages execute arbitrary code. `pkg_install` uses daemon-owned security settin
 | `packed mirror [--json]` | Refresh the SQLite package index |
 | `packed installed [--json]` | Read Pi's installed package declarations |
 | `packed catalog [--json]` | Inspect the local package index |
-| `packed install <source> [--json]` | Authenticated daemon install for `npm:`, `git:`, or `https://` sources |
-| `packed remove <name> [--json]` | Authenticated daemon removal by bare npm name |
-| `packed security [always\|never] [--json]` | Read or set the install approval policy |
+| `packed install <source> [--approve] [--json]` | Authenticated daemon install for `npm:`, `git:`, or `https://` sources |
+| `packed remove <name> [--approve] [--json]` | Authenticated daemon removal by bare npm name |
+| `packed security [always\|never] [--approve] [--json]` | Read or set the package mutation approval policy |
 | `packed serve` | Run the loopback daemon |
 | `packed service` | Print the systemd user unit |
 | `packed version` | Print the package/service version |
 
-Install/remove JSON results are stable objects:
+Guarded CLI mutations require `--approve` under the secure default. This is pi-packed mutation authorization, distinct from Pi's project-trust `--approve` semantics. Install/remove JSON results are stable objects:
 
 ```json
 {"ok":true,"source":"npm:pi-lsp","output":"Installed npm:pi-lsp"}
@@ -77,11 +77,11 @@ The daemon listens on loopback only.
 | `GET` | `/info?name=` |
 | `GET` | `/installed` |
 | `GET` | `/security` |
-| `POST` | `/security` with `{ "installApproval": "always" | "never" }` |
+| `POST` | `/security` with `{ "mutationApproval": "always" | "never", "approved": true }` |
 | `GET` | `/updates` |
 | `GET` | `/catalog` |
-| `POST` | `/install` with `{ "source": "..." }` |
-| `POST` | `/remove` with `{ "name": "..." }` |
+| `POST` | `/install` with `{ "source": "...", "approved": true }` |
+| `POST` | `/remove` with `{ "name": "...", "approved": true }` |
 
 State defaults to `~/.cache/pi-packed/` and contains `token`, `port`,
 `updates.json`, `security.json`, and `packed.db`. Relevant environment variables:
@@ -102,6 +102,7 @@ State defaults to `~/.cache/pi-packed/` and contains `token`, `port`,
   loopback API and reconnect after daemon restarts.
 - **Ports and adapters:** registry and installer ports keep policy independent
   from npm, SQLite, subprocess, HTTP, and UI adapters.
+- **Operation-aware authorization:** one policy matrix classifies reads, maintenance, code execution, settings mutation, and security mutation; guarded daemon routes reject missing approval with stable `approval_required` errors.
 - **Allowlisted mutation input:** package sources and names reject shell
   metacharacters before reaching the installer.
 - **Bounded requests:** daemon calls use timeouts and return structured errors

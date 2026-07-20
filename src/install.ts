@@ -23,11 +23,11 @@ export class ExecInstaller implements Installer {
 		return out;
 	}
 
-	install(source: string): Promise<string> {
+	install(source: string, _options?: { approved?: boolean }): Promise<string> {
 		return this.run(["install", source]);
 	}
 
-	remove(source: string): Promise<string> {
+	remove(source: string, _options?: { approved?: boolean }): Promise<string> {
 		return this.run(["remove", source]);
 	}
 }

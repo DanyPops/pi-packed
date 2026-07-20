@@ -31,13 +31,16 @@ class FakeInstaller implements Installer {
 	gotSource = "";
 	removed = "";
 	fail = false;
-	async install(source: string): Promise<string> {
+	approved = false;
+	async install(source: string, options?: { approved?: boolean }): Promise<string> {
 		this.gotSource = source;
+		this.approved = options?.approved === true;
 		if (this.fail) throw new Error("installer failed");
 		return `Installed ${source}`;
 	}
-	async remove(source: string): Promise<string> {
+	async remove(source: string, options?: { approved?: boolean }): Promise<string> {
 		this.removed = source;
+		this.approved = options?.approved === true;
 		return `Removed ${source}`;
 	}
 }
@@ -47,8 +50,8 @@ function deps(over: Partial<CliDeps> = {}): CliDeps {
 		reg: new FakeRegistry(),
 		inst: new FakeInstaller(),
 		security: {
-			async security() { return { installApproval: "always" as const }; },
-			async setInstallApproval(installApproval) { return { installApproval }; },
+			async security() { return { mutationApproval: "always" as const }; },
+			async setMutationApproval(mutationApproval) { return { mutationApproval }; },
 		},
 		stateDir: mkdtempSync(join(tmpdir(), "packed-")),
 		piHome: mkdtempSync(join(tmpdir(), "packed-pihome-")),
@@ -58,15 +61,19 @@ function deps(over: Partial<CliDeps> = {}): CliDeps {
 
 describe("CLI", () => {
 	it("security reads and writes stable JSON through the daemon port", async () => {
-		let installApproval: "always" | "never" = "always";
+		let mutationApproval: "always" | "never" = "always";
 		const d = deps({
 			security: {
-				async security() { return { installApproval }; },
-				async setInstallApproval(value) { installApproval = value; return { installApproval }; },
+				async security() { return { mutationApproval }; },
+				async setMutationApproval(value, options) {
+					expect(options?.approved).toBe(true);
+					mutationApproval = value;
+					return { mutationApproval };
+				},
 			},
 		});
-		expect((await cliRun(["security", "--json"], d)).out).toBe('{"installApproval":"always"}\n');
-		expect((await cliRun(["security", "never", "--json"], d)).out).toBe('{"installApproval":"never"}\n');
+		expect((await cliRun(["security", "--json"], d)).out).toBe('{"mutationApproval":"always"}\n');
+		expect((await cliRun(["security", "never", "--approve", "--json"], d)).out).toBe('{"mutationApproval":"never"}\n');
 	});
 
 	it("search --json", async () => {
@@ -154,10 +161,12 @@ describe("CLI", () => {
 
 	it("install runs with stable human and JSON output", async () => {
 		const d = deps();
-		const human = await cliRun(["install", "npm:foo"], d);
+		expect((await cliRun(["install", "npm:foo"], d)).code).toBe(1);
+		const human = await cliRun(["install", "npm:foo", "--approve"], d);
 		expect(human.code).toBe(0);
 		expect(human.out).toContain("Installed npm:foo");
-		const json = await cliRun(["install", "npm:foo", "--json"], d);
+		expect((d.inst as FakeInstaller).approved).toBe(true);
+		const json = await cliRun(["install", "npm:foo", "--approve", "--json"], d);
 		expect(json.code).toBe(0);
 		expect(JSON.parse(json.out)).toEqual({ ok: true, source: "npm:foo", output: "Installed npm:foo" });
 	});
@@ -165,10 +174,11 @@ describe("CLI", () => {
 	it("remove wants a bare name and has stable JSON output", async () => {
 		const d = deps();
 		expect((await cliRun(["remove", "npm:foo"], d)).code).toBe(2);
-		const { code } = await cliRun(["remove", "pi-lsp"], d);
+		const { code } = await cliRun(["remove", "pi-lsp", "--approve"], d);
 		expect(code).toBe(0);
 		expect((d.inst as FakeInstaller).removed).toBe("npm:pi-lsp");
-		const json = await cliRun(["remove", "pi-lsp", "--json"], d);
+		expect((d.inst as FakeInstaller).approved).toBe(true);
+		const json = await cliRun(["remove", "pi-lsp", "--approve", "--json"], d);
 		expect(JSON.parse(json.out)).toEqual({ ok: true, name: "pi-lsp", output: "Removed npm:pi-lsp" });
 	});
 
@@ -226,13 +236,14 @@ describe("daemon client", () => {
 		expect((await client.info("pi-lsp")).version).toBe("1.0.0");
 		expect(await client.installed()).toEqual([]);
 		expect(await client.updates()).toEqual([]);
-		expect(await client.security()).toEqual({ installApproval: "always" });
-		expect(await client.setInstallApproval("never")).toEqual({ installApproval: "never" });
-		expect(await client.install("npm:pi-lsp")).toBe("Installed npm:pi-lsp");
-		expect(await client.remove("pi-lsp")).toBe("Removed npm:pi-lsp");
+		expect(await client.security()).toEqual({ mutationApproval: "always" });
+		await expect(client.install("npm:pi-lsp")).rejects.toThrow("approval required");
+		expect(await client.install("npm:pi-lsp", true)).toBe("Installed npm:pi-lsp");
+		expect(await client.remove("pi-lsp", true)).toBe("Removed npm:pi-lsp");
 		const installer = new PackageDaemonInstaller(client);
-		expect(await installer.install("npm:pi-lsp@1.0.0")).toBe("Installed npm:pi-lsp@1.0.0");
-		expect(await installer.remove("npm:pi-lsp")).toBe("Removed npm:pi-lsp");
+		expect(await installer.install("npm:pi-lsp@1.0.0", { approved: true })).toBe("Installed npm:pi-lsp@1.0.0");
+		expect(await installer.remove("npm:pi-lsp", { approved: true })).toBe("Removed npm:pi-lsp");
+		expect(await client.setMutationApproval("never", true)).toEqual({ mutationApproval: "never" });
 		expect(daemonInstaller.gotSource).toBe("npm:pi-lsp@1.0.0");
 		expect(daemonInstaller.removed).toBe("npm:pi-lsp");
 

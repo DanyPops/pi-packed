@@ -77,21 +77,21 @@ class FakePackageDaemon implements PackageDaemonPort {
 
 	async security() {
 		this.calls.push({ operation: "security" });
-		return { installApproval: "always" as const };
+		return { mutationApproval: "always" as const };
 	}
 
-	async setInstallApproval(installApproval: "always" | "never") {
-		this.calls.push({ operation: "setInstallApproval", input: { installApproval } });
-		return { installApproval };
+	async setMutationApproval(mutationApproval: "always" | "never", approved = false) {
+		this.calls.push({ operation: "setMutationApproval", input: { mutationApproval, approved } });
+		return { mutationApproval };
 	}
 
-	async install(source: string) {
-		this.calls.push({ operation: "install", input: { source } });
+	async install(source: string, approved = false) {
+		this.calls.push({ operation: "install", input: { source, approved } });
 		return `Installed ${source}`;
 	}
 
-	async remove(name: string) {
-		this.calls.push({ operation: "remove", input: { name } });
+	async remove(name: string, approved = false) {
+		this.calls.push({ operation: "remove", input: { name, approved } });
 		return `Removed ${name}`;
 	}
 }
@@ -106,12 +106,12 @@ describe("packed extension seam", () => {
 		expect((await natives.info("pi-lsp")).version).toBe("1.0.0");
 		expect(await natives.installed()).toHaveLength(1);
 		expect(await natives.updates()).toHaveLength(1);
-		expect((await natives.security()).installApproval).toBe("always");
-		expect((await natives.setInstallApproval("never")).installApproval).toBe("never");
-		expect(await natives.install("npm:pi-lsp@1.0.0")).toContain("Installed");
-		expect(await natives.remove("pi-lsp")).toContain("Removed");
+		expect((await natives.security()).mutationApproval).toBe("always");
+		expect((await natives.setMutationApproval("never", true)).mutationApproval).toBe("never");
+		expect(await natives.install("npm:pi-lsp@1.0.0", true)).toContain("Installed");
+		expect(await natives.remove("pi-lsp", true)).toContain("Removed");
 		expect(daemon.calls.map((call) => call.operation)).toEqual([
-			"search", "search", "info", "installed", "updates", "security", "setInstallApproval", "install", "remove",
+			"search", "search", "info", "installed", "updates", "security", "setMutationApproval", "install", "remove",
 		]);
 		expect(daemon.calls[1]?.input).toEqual({ query: "lsp", limit: 5, offline: true });
 	});

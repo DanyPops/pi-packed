@@ -78,20 +78,27 @@ describe("service app", () => {
 		}
 	});
 
-	it("reads and updates install approval with a secure default", async () => {
+	it("reads and updates mutation approval with a secure default", async () => {
 		const app = createApp(deps());
 		const initial = await app.fetch(new Request("http://x/security", { headers: auth }));
-		expect(await initial.json()).toEqual({ installApproval: "always" });
+		expect(await initial.json()).toEqual({ mutationApproval: "always" });
+		const denied = await app.fetch(new Request("http://x/security", {
+			method: "POST",
+			headers: { ...auth, "content-type": "application/json" },
+			body: JSON.stringify({ mutationApproval: "never" }),
+		}));
+		expect(denied.status).toBe(403);
+		expect(await denied.json()).toMatchObject({ code: "approval_required", operation: "security.write" });
 		const updated = await app.fetch(new Request("http://x/security", {
 			method: "POST",
 			headers: { ...auth, "content-type": "application/json" },
-			body: JSON.stringify({ installApproval: "never" }),
+			body: JSON.stringify({ mutationApproval: "never", approved: true }),
 		}));
-		expect(await updated.json()).toEqual({ installApproval: "never" });
+		expect(await updated.json()).toEqual({ mutationApproval: "never" });
 		const invalid = await app.fetch(new Request("http://x/security", {
 			method: "POST",
 			headers: { ...auth, "content-type": "application/json" },
-			body: JSON.stringify({ installApproval: "sometimes" }),
+			body: JSON.stringify({ mutationApproval: "sometimes", approved: true }),
 		}));
 		expect(invalid.status).toBe(400);
 	});
@@ -148,6 +155,22 @@ describe("service app", () => {
 		expect(inst.gotSource).toBe("");
 	});
 
+	it("guards install and remove at the authenticated daemon boundary", async () => {
+		const inst = new FakeInstaller();
+		const app = createApp(deps({ inst }));
+		for (const [path, body] of [["/install", { source: "npm:foo" }], ["/remove", { name: "foo" }]] as const) {
+			const response = await app.fetch(new Request(`http://x${path}`, {
+				method: "POST",
+				headers: { ...auth, "content-type": "application/json" },
+				body: JSON.stringify(body),
+			}));
+			expect(response.status).toBe(403);
+			expect(await response.json()).toMatchObject({ code: "approval_required" });
+		}
+		expect(inst.gotSource).toBe("");
+		expect(inst.removed).toBe("");
+	});
+
 	it("POST /install accepts valid sources, reports failures in-band", async () => {
 		const inst = new FakeInstaller();
 		const app = createApp(deps({ inst }));
@@ -156,7 +179,7 @@ describe("service app", () => {
 				new Request("http://x/install", {
 					method: "POST",
 					headers: { ...auth, "content-type": "application/json" },
-					body: JSON.stringify({ source }),
+					body: JSON.stringify({ source, approved: true }),
 				}),
 			);
 			expect(res.status).toBe(200);
@@ -169,7 +192,7 @@ describe("service app", () => {
 			new Request("http://x/install", {
 				method: "POST",
 				headers: { ...auth, "content-type": "application/json" },
-				body: JSON.stringify({ source: "npm:missing" }),
+				body: JSON.stringify({ source: "npm:missing", approved: true }),
 			}),
 		);
 		expect(res.status).toBe(200);
@@ -212,7 +235,7 @@ describe("service app", () => {
 				new Request("http://x/remove", {
 					method: "POST",
 					headers: { ...auth, "content-type": "application/json" },
-					body: JSON.stringify({ name }),
+					body: JSON.stringify({ name, approved: true }),
 				}),
 			);
 			expect(res.status).toBe(400);
@@ -223,7 +246,7 @@ describe("service app", () => {
 			new Request("http://x/remove", {
 				method: "POST",
 				headers: { ...auth, "content-type": "application/json" },
-				body: JSON.stringify({ name: "pi-lsp" }),
+				body: JSON.stringify({ name: "pi-lsp", approved: true }),
 			}),
 		);
 		expect(res.status).toBe(200);

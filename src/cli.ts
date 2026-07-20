@@ -11,15 +11,21 @@ import { checkUpdates } from "./watcher.ts";
 import { syncCatalog } from "./catalog.ts";
 import { openDb, searchLocal, catalogList, getSyncMeta, latestVersion, dbPath } from "./db.ts";
 import { NAME_RE, defaultPiBin } from "./install.ts";
-import type { InstallApproval, SecuritySettingsPort } from "./security.ts";
+import {
+	assertPackagePermission,
+	type MutationApproval,
+	type PackageOperation,
+	type SecuritySettingsPort,
+} from "./security.ts";
 
 function defaultPiBinForUnit(): string | undefined {
 	const b = defaultPiBin();
 	return b === "pi" ? undefined : b; // bare name needs no pin
 }
 import {
-	VERSION, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, NPM_REGISTRY_BASE, SEARCH_PAGE_SIZE, MIRROR_PAGE_DELAY_MS,
+	SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, NPM_REGISTRY_BASE, SEARCH_PAGE_SIZE, MIRROR_PAGE_DELAY_MS,
 } from "./constants.ts";
+import { VERSION } from "./version.ts";
 
 const SOURCE_RE = /^(npm:[A-Za-z0-9@._/-]+|git:[A-Za-z0-9@:._/-]+|https:\/\/[A-Za-z0-9@:._/?=&%~-]+)$/;
 
@@ -32,9 +38,9 @@ usage:
   packed mirror [--json]                       sync upstream into the local SQLite index
   packed installed [--json]                    installed pi packages
   packed catalog [--json]                      local package index (apt-cache stats)
-  packed install <source> [--json]             pi install npm:|git:|https://… via daemon
-  packed remove <name> [--json]                remove by bare npm name via daemon
-  packed security [always|never] [--json]       read or set install approval policy
+  packed install <source> [--approve] [--json] pi install npm:|git:|https://… via daemon
+  packed remove <name> [--approve] [--json]    remove by bare npm name via daemon
+  packed security [always|never] [--approve] [--json] read or set mutation approval policy
   packed serve                                 run the long-running daemon
   packed service                               print a systemd user unit
   packed version                               print version
@@ -61,16 +67,18 @@ interface Flags {
 	limit: number;
 	cached: boolean;
 	offline: boolean;
+	approved: boolean;
 }
 
 function parseFlags(rest: string[]): { flags: Flags; pos: string[] } {
-	const flags: Flags = { json: false, limit: SEARCH_DEFAULT_LIMIT, cached: false, offline: false };
+	const flags: Flags = { json: false, limit: SEARCH_DEFAULT_LIMIT, cached: false, offline: false, approved: false };
 	const pos: string[] = [];
 	for (let i = 0; i < rest.length; i++) {
 		const a = rest[i]!;
 		if (a === "--json") flags.json = true;
 		else if (a === "--cached") flags.cached = true;
 		else if (a === "--offline") flags.offline = true;
+		else if (a === "--approve") flags.approved = true;
 		else if (a === "--limit" && i + 1 < rest.length) flags.limit = Number(rest[++i]) || SEARCH_DEFAULT_LIMIT;
 		else if (a.startsWith("--limit=")) flags.limit = Number(a.slice(8)) || SEARCH_DEFAULT_LIMIT;
 		else pos.push(a);
@@ -83,6 +91,17 @@ type Command = (rest: string[], d: CliDeps, flags: Flags, pos: string[]) => Prom
 const ok = (out: string): CliResult => ({ code: 0, out });
 const fail = (out: string, code = 1): CliResult => ({ code, out });
 const usageErr = (out: string): CliResult => ({ code: 2, out });
+
+const PACKAGE_COMMAND_OPERATIONS: Record<string, PackageOperation | undefined> = {
+	search: "search",
+	info: "info",
+	installed: "installed",
+	catalog: "catalog",
+	updates: "updates",
+	mirror: "mirror",
+	install: "install",
+	remove: "remove",
+};
 
 const commands: Record<string, { usage: string; run: Command }> = {
 	search: {
@@ -193,7 +212,7 @@ const commands: Record<string, { usage: string; run: Command }> = {
 			const source = pos[0] ?? "";
 			if (!SOURCE_RE.test(source)) return usageErr(`usage: ${commands["install"]!.usage}\n`);
 			try {
-				const output = await d.inst.install(source);
+				const output = await d.inst.install(source, { approved: flags.approved });
 				return flags.json ? ok(`${JSON.stringify({ ok: true, source, output })}\n`) : ok(`${output}\n`);
 			} catch (e) {
 				const error = e instanceof Error ? e.message : String(e);
@@ -210,11 +229,11 @@ const commands: Record<string, { usage: string; run: Command }> = {
 				return usageErr(`usage: ${commands["security"]!.usage}\n`);
 			}
 			const settings = requested
-				? await d.security.setInstallApproval(requested as InstallApproval)
+				? await d.security.setMutationApproval(requested as MutationApproval, { approved: flags.approved })
 				: await d.security.security();
 			return flags.json
 				? ok(`${JSON.stringify(settings)}\n`)
-				: ok(`install approval: ${settings.installApproval}\n`);
+				: ok(`package mutation approval: ${settings.mutationApproval}\n`);
 		},
 	},
 
@@ -224,7 +243,7 @@ const commands: Record<string, { usage: string; run: Command }> = {
 			const name = pos[0] ?? "";
 			if (!NAME_RE.test(name)) return usageErr(`usage: ${commands["remove"]!.usage}\n`);
 			try {
-				const output = await d.inst.remove(`npm:${name}`);
+				const output = await d.inst.remove(`npm:${name}`, { approved: flags.approved });
 				return flags.json ? ok(`${JSON.stringify({ ok: true, name, output })}\n`) : ok(`${output}\n`);
 			} catch (e) {
 				const error = e instanceof Error ? e.message : String(e);
@@ -280,6 +299,15 @@ export async function cliRun(args: string[], d: CliDeps): Promise<CliResult> {
 	if (!cmd) return usageErr(`unknown command "${name}"\n${USAGE}`);
 	const { flags, pos } = parseFlags(rest);
 	try {
+		const validMutationInput = name === "install"
+			? SOURCE_RE.test(pos[0] ?? "")
+			: name === "remove" ? NAME_RE.test(pos[0] ?? "")
+				: name === "security" ? (pos[0] === undefined || pos[0] === "always" || pos[0] === "never")
+					: true;
+		const operation = name === "security"
+			? (pos[0] === undefined ? "security.read" : "security.write")
+			: PACKAGE_COMMAND_OPERATIONS[name];
+		if (operation && validMutationInput) assertPackagePermission(await d.security.security(), operation, flags.approved);
 		return await cmd.run(rest, d, flags, pos);
 	} catch (e) {
 		return fail(`${name} failed: ${e instanceof Error ? e.message : e}\n`);

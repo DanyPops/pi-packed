@@ -8,7 +8,7 @@
  */
 import type { PackageDaemonPort as ClientPackageDaemonPort } from "../../src/client.ts";
 import type { InstalledPkg, Pkg, PkgInfo, UpdateEntry } from "../../src/ports.ts";
-import type { InstallApproval, SecuritySettings } from "../../src/security.ts";
+import type { MutationApproval, SecuritySettings } from "../../src/security.ts";
 
 export type { InstalledPkg, UpdateEntry };
 export type PackageInfo = PkgInfo;
@@ -27,9 +27,9 @@ export interface Natives {
 	installed(): Promise<InstalledPkg[]>;
 	updates(): Promise<UpdateEntry[]>;
 	security(): Promise<SecuritySettings>;
-	setInstallApproval(value: InstallApproval): Promise<SecuritySettings>;
-	install(source: string): Promise<string>;
-	remove(name: string): Promise<string>;
+	setMutationApproval(value: MutationApproval, approved?: boolean): Promise<SecuritySettings>;
+	install(source: string, approved?: boolean): Promise<string>;
+	remove(name: string, approved?: boolean): Promise<string>;
 }
 
 export type PackageDaemonConnector = () => Promise<PackageDaemonPort>;
@@ -62,8 +62,8 @@ export async function createNatives(connect: PackageDaemonConnector = connectDef
 		installed: () => call((daemon) => daemon.installed()),
 		updates: () => call((daemon) => daemon.updates()),
 		security: () => call((daemon) => daemon.security()),
-		setInstallApproval: (value) => call((daemon) => daemon.setInstallApproval(value)),
-		install: (source) => call((daemon) => daemon.install(source)),
-		remove: (name) => call((daemon) => daemon.remove(name)),
+		setMutationApproval: (value, approved) => call((daemon) => daemon.setMutationApproval(value, approved)),
+		install: (source, approved) => call((daemon) => daemon.install(source, approved)),
+		remove: (name, approved) => call((daemon) => daemon.remove(name, approved)),
 	};
 }

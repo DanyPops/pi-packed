@@ -10,6 +10,7 @@ import { Container, Input, Spacer, truncateToWidth, visibleWidth } from "@earend
 import { filterRows, mergeRows, nextMode, visibleRows } from "./model.js";
 import type { Row, ViewMode } from "./model.js";
 import type { Natives } from "./packed.js";
+import { approvePackageOperation } from "./tools.js";
 
 interface PanelAction {
 	type: "menu" | "refresh";
@@ -64,9 +65,14 @@ export async function showPackages(ctx: ExtensionCommandContext, natives: Native
 		);
 
 		if (choice?.startsWith("Update")) {
-			ctx.ui.notify(`Updating ${row.name}…`, "info");
 			try {
-				await natives.install(`npm:${row.name}@${row.latest}`);
+				const approval = await approvePackageOperation("update", `pi update --extension npm:${row.name}`, natives, ctx);
+				if (!approval.allowed) {
+					ctx.ui.notify(approval.message ?? "update denied", "warning");
+					continue;
+				}
+				ctx.ui.notify(`Updating ${row.name}…`, "info");
+				await natives.install(`npm:${row.name}@${row.latest}`, approval.approved);
 				ctx.ui.notify(`Updated ${row.name} to ${row.latest} (takes effect after /reload)`, "info");
 				row.version = row.latest ?? row.version;
 				row.hasUpdate = false;
@@ -74,15 +80,17 @@ export async function showPackages(ctx: ExtensionCommandContext, natives: Native
 				ctx.ui.notify(`update failed: ${e instanceof Error ? e.message : e}`, "error");
 			}
 		} else if (choice === "Remove") {
-			const sure = await ctx.ui.confirm("Remove package", `pi remove npm:${row.name}?`);
-			if (sure) {
-				try {
-					await natives.remove(row.name);
+			try {
+				const approval = await approvePackageOperation("remove", `pi remove npm:${row.name}`, natives, ctx);
+				if (approval.allowed) {
+					await natives.remove(row.name, approval.approved);
 					ctx.ui.notify(`Removed ${row.name}`, "info");
 					rows = rows.filter((r) => r.name !== row.name);
-				} catch (e) {
-					ctx.ui.notify(`remove failed: ${e instanceof Error ? e.message : e}`, "error");
+				} else {
+					ctx.ui.notify(approval.message ?? "remove denied", "warning");
 				}
+			} catch (e) {
+				ctx.ui.notify(`remove failed: ${e instanceof Error ? e.message : e}`, "error");
 			}
 		}
 	}
