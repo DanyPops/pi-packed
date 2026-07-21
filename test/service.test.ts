@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createApp, type Deps } from "../src/service.ts";
 import { saveUpdates } from "../src/watcher.ts";
 import { openDb, replaceAll, dbPath } from "../src/db.ts";
-import type { Installer, Pkg, PkgInfo, Registry, SearchPage } from "../src/ports.ts";
+import type { Installer, Pkg, PkgInfo, Registry, SearchPage, UpdateOutcome } from "../src/ports.ts";
 
 class FakeRegistry implements Registry {
 	searchCalls = 0;
@@ -49,9 +49,10 @@ class FakeInstaller implements Installer {
 		this.removed = source;
 		return this.output;
 	}
-	async update(source: string): Promise<string> {
+	updateOutcome: Partial<UpdateOutcome> = {};
+	async update(source: string): Promise<UpdateOutcome> {
 		this.updated = source;
-		return this.output;
+		return { output: this.output, reloadRequired: true, alreadyUpToDate: false, pinned: false, ...this.updateOutcome };
 	}
 }
 
@@ -219,8 +220,35 @@ describe("service app", () => {
 			body: JSON.stringify({ source: "npm:pi-lsp", approved: true }),
 		}));
 		expect(allowed.status).toBe(200);
-		expect(await allowed.json()).toEqual({ ok: true, source: "npm:pi-lsp", output: "ok", reloadRequired: true });
+		expect(await allowed.json()).toEqual({
+			ok: true,
+			source: "npm:pi-lsp",
+			output: "ok",
+			reloadRequired: true,
+			alreadyUpToDate: false,
+			pinned: false,
+		});
 		expect(inst.updated).toBe("npm:pi-lsp");
+	});
+
+	it("POST /update reports an honest no-op instead of trusting pi's always-0-exit-code text", async () => {
+		const inst = new FakeInstaller();
+		inst.updateOutcome = { reloadRequired: false, alreadyUpToDate: true, pinned: true, previousVersion: "1.0.0", currentVersion: "1.0.0" };
+		const app = createApp(deps({ inst }));
+		const res = await app.fetch(new Request("http://x/update", {
+			method: "POST", headers: { ...auth, "content-type": "application/json" },
+			body: JSON.stringify({ source: "npm:pi-lsp@1.0.0", approved: true }),
+		}));
+		expect(await res.json()).toEqual({
+			ok: true,
+			source: "npm:pi-lsp@1.0.0",
+			output: "ok",
+			reloadRequired: false,
+			alreadyUpToDate: true,
+			pinned: true,
+			previousVersion: "1.0.0",
+			currentVersion: "1.0.0",
+		});
 	});
 
 	it("GET /updates serves the watcher snapshot", async () => {

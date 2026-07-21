@@ -182,8 +182,8 @@ export function createApp(deps: Deps): { fetch: (req: Request) => Promise<Respon
 			const denied = authorize("update", approved);
 			if (denied) return denied;
 			try {
-				const output = await deps.inst.update(source, { approved });
-				return json({ ok: true, source, output, reloadRequired: true });
+				const outcome = await deps.inst.update(source, { approved });
+				return json({ ok: true, source, ...outcome });
 			} catch (error) {
 				return json({ ok: false, source, output: error instanceof Error ? error.message : String(error), reloadRequired: false });
 			}

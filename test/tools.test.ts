@@ -24,7 +24,11 @@ describe("native package mutation permission policy", () => {
 		let updates = 0;
 		const result = await updatePackageWithPolicy("npm:pkg", {
 			async security() { return { mutationApproval: "always" }; },
-			async update(_source, approved) { expect(approved).toBe(true); updates += 1; return "updated"; },
+			async update(_source, approved) {
+				expect(approved).toBe(true);
+				updates += 1;
+				return { output: "updated", reloadRequired: true, alreadyUpToDate: false, pinned: false };
+			},
 		}, {
 			hasUI: true,
 			ui: { async confirm(_title, message) { expect(message).toContain("pi update --extension npm:pkg"); return true; } },

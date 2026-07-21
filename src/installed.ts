@@ -30,6 +30,36 @@ function nodeModulesVersion(piHome: string, name: string): string | undefined {
 	}
 }
 
+/**
+ * True when a configured npm: source pins an exact version, e.g.
+ * "npm:@scope/pkg@1.2.3" vs. the floating "npm:@scope/pkg". `pi update`
+ * intentionally leaves pinned sources unchanged (see readInstalledPackages)
+ * but still exits 0 and prints "Updated <source>" either way -- callers
+ * must not treat that text as proof anything changed.
+ */
+export function isPinnedNpmSource(source: string): boolean {
+	if (!source.startsWith("npm:")) return false;
+	const [, pinned] = splitNpmSource(source.slice(4));
+	return pinned !== "";
+}
+
+/** The bare npm package name for a configured npm: source, pinned or not.
+ * undefined for git:/https: sources -- there is no npm-registry name to read. */
+export function npmPackageName(source: string): string | undefined {
+	if (!source.startsWith("npm:")) return undefined;
+	const [name] = splitNpmSource(source.slice(4));
+	return name;
+}
+
+/** Reads a single npm package's real on-disk resolved version, regardless of
+ * whether its configured source is pinned -- ground truth for detecting
+ * whether an update actually changed anything. undefined for non-npm
+ * sources or when node_modules has no matching package.json to read. */
+export function readResolvedVersion(piHome: string, source: string): string | undefined {
+	const name = npmPackageName(source);
+	return name ? nodeModulesVersion(piHome, name) : undefined;
+}
+
 export function readInstalledPackages(piHome: string): InstalledPkg[] {
 	let settings: { packages?: unknown[] };
 	try {

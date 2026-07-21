@@ -152,6 +152,12 @@ export function createMutationDetails(
 	target: string,
 	status: MutationToolDetails["status"],
 	output: string,
+	// update's reloadRequired is not always "succeeded implies true" -- pi
+	// update exits 0 whether or not a pinned/already-latest package actually
+	// changed. Callers that know the real outcome (updatePackageWithPolicy)
+	// pass it explicitly; install/remove keep the old succeeded-implies-true
+	// default, which is accurate for them.
+	reloadRequired: boolean = operation === "update" && status === "succeeded",
 ): MutationToolDetails {
 	return {
 		version: DETAILS_VERSION,
@@ -160,7 +166,7 @@ export function createMutationDetails(
 		target: safePackageTarget(target),
 		status,
 		output: safeDisplayText(output, TOOL_DETAILS_MAX_OUTPUT_CHARACTERS),
-		reloadRequired: operation === "update" && status === "succeeded",
+		reloadRequired,
 	};
 }
 

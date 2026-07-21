@@ -8,7 +8,7 @@ import { createApp } from "../src/service.ts";
 import { saveUpdates } from "../src/watcher.ts";
 import { openDb, replaceAll, dbPath, catalogList } from "../src/db.ts";
 import { HttpRegistry } from "../src/registry.ts";
-import type { Installer, Pkg, PkgInfo, Registry, SearchPage } from "../src/ports.ts";
+import type { Installer, Pkg, PkgInfo, Registry, SearchPage, UpdateOutcome } from "../src/ports.ts";
 import type { Server } from "bun";
 
 class FakeRegistry implements Registry {
@@ -33,6 +33,8 @@ class FakeInstaller implements Installer {
 	updated = "";
 	fail = false;
 	approved = false;
+	/** Override per-test to exercise the alreadyUpToDate/pinned reporting paths. */
+	updateOutcome: Partial<UpdateOutcome> = {};
 	async install(source: string, options?: { approved?: boolean }): Promise<string> {
 		this.gotSource = source;
 		this.approved = options?.approved === true;
@@ -44,10 +46,16 @@ class FakeInstaller implements Installer {
 		this.approved = options?.approved === true;
 		return `Removed ${source}`;
 	}
-	async update(source: string, options?: { approved?: boolean }): Promise<string> {
+	async update(source: string, options?: { approved?: boolean }): Promise<UpdateOutcome> {
 		this.updated = source;
 		this.approved = options?.approved === true;
-		return `Updated ${source}`;
+		return {
+			output: `Updated ${source}`,
+			reloadRequired: true,
+			alreadyUpToDate: false,
+			pinned: false,
+			...this.updateOutcome,
+		};
 	}
 }
 
@@ -191,7 +199,39 @@ describe("CLI", () => {
 		expect((d.inst as FakeInstaller).updated).toBe("npm:foo");
 		expect((d.inst as FakeInstaller).approved).toBe(true);
 		const json = await cliRun(["update", "npm:foo", "--approve", "--json"], d);
-		expect(JSON.parse(json.out)).toEqual({ ok: true, source: "npm:foo", output: "Updated npm:foo", reloadRequired: true });
+		expect(JSON.parse(json.out)).toEqual({
+			ok: true,
+			source: "npm:foo",
+			output: "Updated npm:foo",
+			reloadRequired: true,
+			alreadyUpToDate: false,
+			pinned: false,
+		});
+	});
+
+	it("update reports honestly when pi update is a no-op (pinned or already latest)", async () => {
+		const d = deps();
+		(d.inst as FakeInstaller).updateOutcome = {
+			alreadyUpToDate: true,
+			reloadRequired: false,
+			pinned: true,
+			previousVersion: "1.2.3",
+			currentVersion: "1.2.3",
+		};
+		const human = await cliRun(["update", "npm:foo@1.2.3", "--approve"], d);
+		expect(human.out).toContain("pinned to 1.2.3");
+		expect(human.out).not.toContain("Reload Pi");
+		const json = await cliRun(["update", "npm:foo@1.2.3", "--approve", "--json"], d);
+		expect(JSON.parse(json.out)).toEqual({
+			ok: true,
+			source: "npm:foo@1.2.3",
+			output: "Updated npm:foo@1.2.3",
+			reloadRequired: false,
+			alreadyUpToDate: true,
+			pinned: true,
+			previousVersion: "1.2.3",
+			currentVersion: "1.2.3",
+		});
 	});
 
 	it("remove wants a bare name and has stable JSON output", async () => {
@@ -263,11 +303,18 @@ describe("daemon client", () => {
 		await expect(client.install("npm:pi-lsp")).rejects.toThrow("approval required");
 		expect(await client.install("npm:pi-lsp", true)).toBe("Installed npm:pi-lsp");
 		expect(await client.remove("pi-lsp", true)).toBe("Removed npm:pi-lsp");
-		expect(await client.update("npm:pi-lsp", true)).toBe("Updated npm:pi-lsp");
+		expect(await client.update("npm:pi-lsp", true)).toEqual({
+			output: "Updated npm:pi-lsp",
+			reloadRequired: true,
+			alreadyUpToDate: false,
+			pinned: false,
+			previousVersion: undefined,
+			currentVersion: undefined,
+		});
 		const installer = new PackageDaemonInstaller(client);
 		expect(await installer.install("npm:pi-lsp@1.0.0", { approved: true })).toBe("Installed npm:pi-lsp@1.0.0");
 		expect(await installer.remove("npm:pi-lsp", { approved: true })).toBe("Removed npm:pi-lsp");
-		expect(await installer.update("npm:pi-lsp", { approved: true })).toBe("Updated npm:pi-lsp");
+		expect((await installer.update("npm:pi-lsp", { approved: true })).output).toBe("Updated npm:pi-lsp");
 		expect(await client.setMutationApproval("never", true)).toEqual({ mutationApproval: "never" });
 		expect(daemonInstaller.gotSource).toBe("npm:pi-lsp@1.0.0");
 		expect(daemonInstaller.removed).toBe("npm:pi-lsp");

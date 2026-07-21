@@ -5,7 +5,7 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { InstalledPkg, Installer, PkgInfo, Registry, SearchPage, UpdateEntry, UpdatesSnapshot } from "./ports.ts";
+import type { InstalledPkg, Installer, PkgInfo, Registry, SearchPage, UpdateEntry, UpdateOutcome, UpdatesSnapshot } from "./ports.ts";
 import { HttpRegistry } from "./registry.ts";
 import { DAEMON_HOST, PROBE_TIMEOUT_MS, REGISTRY_FETCH_TIMEOUT_MS, PORT_FILE, TOKEN_FILE } from "./constants.ts";
 import type { MutationApproval, SecuritySettings } from "./security.ts";
@@ -21,13 +21,15 @@ export interface PackageDaemonPort {
 	setMutationApproval(value: MutationApproval, approved?: boolean): Promise<SecuritySettings>;
 	install(source: string, approved?: boolean): Promise<string>;
 	remove(name: string, approved?: boolean): Promise<string>;
-	update(source: string, approved?: boolean): Promise<string>;
+	update(source: string, approved?: boolean): Promise<UpdateOutcome>;
 }
 
 interface MutationResponse {
 	ok: boolean;
 	output: string;
 }
+
+interface UpdateMutationResponse extends MutationResponse, Partial<Omit<UpdateOutcome, "output">> {}
 
 export class PackageDaemonError extends Error {
 	constructor(
@@ -115,13 +117,23 @@ export class PackageDaemonClient implements PackageDaemonPort {
 		return result.output;
 	}
 
-	async update(source: string, approved = false): Promise<string> {
-		const result = await this.request<MutationResponse>("/update", {
+	async update(source: string, approved = false): Promise<UpdateOutcome> {
+		const result = await this.request<UpdateMutationResponse>("/update", {
 			method: "POST",
 			body: JSON.stringify({ source, approved }),
 		});
 		if (!result.ok) throw new PackageDaemonError(result.output || `failed to update ${source}`, "update");
-		return result.output;
+		// Older daemons (pre-honest-update) only ever sent {ok, output}; default
+		// to the historical "assume it changed" signal rather than claiming
+		// certainty the response doesn't actually contain.
+		return {
+			output: result.output,
+			reloadRequired: result.reloadRequired ?? true,
+			alreadyUpToDate: result.alreadyUpToDate ?? false,
+			pinned: result.pinned ?? false,
+			previousVersion: result.previousVersion,
+			currentVersion: result.currentVersion,
+		};
 	}
 }
 
@@ -139,7 +151,7 @@ export class PackageDaemonInstaller implements Installer {
 		return this.client.remove(source.slice(4), options?.approved);
 	}
 
-	update(source: string, options?: { approved?: boolean }): Promise<string> {
+	update(source: string, options?: { approved?: boolean }): Promise<UpdateOutcome> {
 		return this.client.update(source, options?.approved);
 	}
 }
@@ -165,7 +177,7 @@ export class DaemonBackedInstaller implements Installer {
 		return new PackageDaemonInstaller(await connectPackageDaemon(this.stateDirectory)).remove(source, options);
 	}
 
-	async update(source: string, options?: { approved?: boolean }): Promise<string> {
+	async update(source: string, options?: { approved?: boolean }): Promise<UpdateOutcome> {
 		return (await connectPackageDaemon(this.stateDirectory)).update(source, options?.approved);
 	}
 }

@@ -37,11 +37,30 @@ export interface Registry {
 	info(name: string): Promise<PkgInfo>;
 }
 
+/**
+ * `pi update --extension <source>` exits 0 and prints "Updated <source>"
+ * whether or not anything actually changed -- verified empirically against
+ * both a pinned, already-current source and an unpinned, already-latest
+ * one. reloadRequired/alreadyUpToDate are ground truth (on-disk resolved
+ * version, before vs. after), not that text. previousVersion/currentVersion
+ * are omitted when unknown (git:/https: sources, or no node_modules entry
+ * to read) -- reloadRequired then conservatively stays true rather than
+ * guessing.
+ */
+export interface UpdateOutcome {
+	output: string;
+	reloadRequired: boolean;
+	alreadyUpToDate: boolean;
+	pinned: boolean;
+	previousVersion?: string;
+	currentVersion?: string;
+}
+
 /** Driven port: pi CLI mutations. */
 export interface Installer {
 	install(source: string, options?: { approved?: boolean }): Promise<string>;
 	remove(source: string, options?: { approved?: boolean }): Promise<string>;
-	update(source: string, options?: { approved?: boolean }): Promise<string>;
+	update(source: string, options?: { approved?: boolean }): Promise<UpdateOutcome>;
 }
 
 export interface InstalledPkg {

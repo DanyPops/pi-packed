@@ -70,8 +70,18 @@ export async function updatePackageWithPolicy(
 		const output = approval.message ?? "update denied";
 		return text(output, createMutationDetails("update", source, approval.reason ?? "denied", output));
 	}
-	const output = await natives.update(source, approval.approved) || `Updated ${source}.`;
-	return text(`${output} Reload with /reload to activate.`, createMutationDetails("update", source, "succeeded", output));
+	const outcome = await natives.update(source, approval.approved);
+	if (outcome.alreadyUpToDate) {
+		const version = outcome.currentVersion ?? outcome.previousVersion;
+		const reason = outcome.pinned
+			? `pinned to ${version ?? "an exact version"} -- pi update intentionally leaves pinned packages unchanged; reinstall with a different (or no) version to move off the pin`
+			: `already up to date${version ? ` at ${version}` : ""}`;
+		const message = `${source} is ${reason}.`;
+		return text(message, createMutationDetails("update", source, "succeeded", outcome.output || message, false));
+	}
+	const transition = outcome.previousVersion && outcome.currentVersion ? ` (${outcome.previousVersion} → ${outcome.currentVersion})` : "";
+	const message = `${outcome.output || `Updated ${source}.`}${transition} Reload with /reload to activate.`;
+	return text(message, createMutationDetails("update", source, "succeeded", outcome.output || message, true));
 }
 
 export async function removePackageWithPolicy(

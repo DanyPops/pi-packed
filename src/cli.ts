@@ -7,7 +7,7 @@
  */
 import { buildSearchQuery, clampLimit } from "./ports.ts";
 import type { Installer, Registry } from "./ports.ts";
-import { readInstalledPackages } from "./installed.ts";
+import { npmPackageName, readInstalledPackages } from "./installed.ts";
 import { checkUpdates } from "./watcher.ts";
 import { syncCatalog } from "./catalog.ts";
 import { openDb, searchLocal, catalogList, getSyncMeta, latestVersion, dbPath } from "./db.ts";
@@ -246,10 +246,18 @@ const commands: Record<string, { usage: string; run: Command }> = {
 			const source = pos[0] ?? "";
 			if (!SOURCE_RE.test(source)) return usageErr(`usage: ${commands["update"]!.usage}\n`);
 			try {
-				const output = await d.inst.update(source, { approved: flags.approved });
-				return flags.json
-					? ok(`${JSON.stringify({ ok: true, source, output, reloadRequired: true })}\n`)
-					: ok(`${output}\nReload Pi with /reload to activate the updated package.\n`);
+				const outcome = await d.inst.update(source, { approved: flags.approved });
+				if (flags.json) return ok(`${JSON.stringify({ ok: true, source, ...outcome })}\n`);
+				if (outcome.alreadyUpToDate) {
+					const version = outcome.currentVersion ?? outcome.previousVersion;
+					const reason = outcome.pinned
+						? `is pinned to ${version ?? "an exact version"} — pi update intentionally leaves pinned packages unchanged; run \`packed install npm:${npmPackageName(source) ?? source}\` to move off the pin`
+						: `is already up to date${version ? ` at ${version}` : ""}`;
+					return ok(`${source} ${reason}\n`);
+				}
+				const transition =
+					outcome.previousVersion && outcome.currentVersion ? ` (${outcome.previousVersion} → ${outcome.currentVersion})` : "";
+				return ok(`${outcome.output}${transition}\nReload Pi with /reload to activate the updated package.\n`);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return flags.json

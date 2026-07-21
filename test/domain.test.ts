@@ -2,7 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readInstalledPackages, splitNpmSource } from "../src/installed.ts";
+import { isPinnedNpmSource, npmPackageName, readInstalledPackages, readResolvedVersion, splitNpmSource } from "../src/installed.ts";
 import { checkUpdates, saveUpdates, loadUpdates, startWatcher } from "../src/watcher.ts";
 import { catalogStatus } from "../src/catalog.ts";
 import { openDb, replaceAll } from "../src/db.ts";
@@ -55,6 +55,45 @@ describe("splitNpmSource", () => {
 		expect(splitNpmSource("@scope/pkg@1.0.0")).toEqual(["@scope/pkg", "1.0.0"]);
 		expect(splitNpmSource("foo")).toEqual(["foo", ""]);
 		expect(splitNpmSource("@scope/pkg")).toEqual(["@scope/pkg", ""]);
+	});
+});
+
+describe("isPinnedNpmSource", () => {
+	it("true only for an npm: source with an exact version suffix", () => {
+		expect(isPinnedNpmSource("npm:foo@1.2.3")).toBe(true);
+		expect(isPinnedNpmSource("npm:@scope/pkg@1.2.3")).toBe(true);
+		expect(isPinnedNpmSource("npm:foo")).toBe(false);
+		expect(isPinnedNpmSource("npm:@scope/pkg")).toBe(false);
+		expect(isPinnedNpmSource("git:github.com/u/r@main")).toBe(false);
+		expect(isPinnedNpmSource("https://example.com/pkg.tgz")).toBe(false);
+	});
+});
+
+describe("npmPackageName", () => {
+	it("extracts the bare name for npm: sources, pinned or not", () => {
+		expect(npmPackageName("npm:foo@1.2.3")).toBe("foo");
+		expect(npmPackageName("npm:@scope/pkg@1.2.3")).toBe("@scope/pkg");
+		expect(npmPackageName("npm:@scope/pkg")).toBe("@scope/pkg");
+	});
+
+	it("undefined for non-npm sources", () => {
+		expect(npmPackageName("git:github.com/u/r@main")).toBeUndefined();
+		expect(npmPackageName("https://example.com/pkg.tgz")).toBeUndefined();
+	});
+});
+
+describe("readResolvedVersion", () => {
+	it("reads the real on-disk version regardless of pinning", () => {
+		const home = writePiHome({ packages: [] }, { "@scope/pkg": "3.4.5", plain: "1.0.0" });
+		expect(readResolvedVersion(home, "npm:@scope/pkg@9.9.9")).toBe("3.4.5");
+		expect(readResolvedVersion(home, "npm:@scope/pkg")).toBe("3.4.5");
+		expect(readResolvedVersion(home, "npm:plain")).toBe("1.0.0");
+	});
+
+	it("undefined for a non-npm source or a package missing from node_modules", () => {
+		const home = writePiHome({ packages: [] });
+		expect(readResolvedVersion(home, "git:github.com/u/r@main")).toBeUndefined();
+		expect(readResolvedVersion(home, "npm:never-installed")).toBeUndefined();
 	});
 });
 

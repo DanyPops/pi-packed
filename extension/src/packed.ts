@@ -7,10 +7,10 @@
  * a restarted daemon cannot leave a stale port/token client cached in Pi.
  */
 import type { PackageDaemonPort as ClientPackageDaemonPort } from "../../src/client.ts";
-import type { InstalledPkg, Pkg, PkgInfo, UpdateEntry } from "../../src/ports.ts";
+import type { InstalledPkg, Pkg, PkgInfo, UpdateEntry, UpdateOutcome } from "../../src/ports.ts";
 import type { MutationApproval, SecuritySettings } from "../../src/security.ts";
 
-export type { InstalledPkg, UpdateEntry };
+export type { InstalledPkg, UpdateEntry, UpdateOutcome };
 export type PackageInfo = PkgInfo;
 export type PackageDaemonPort = ClientPackageDaemonPort;
 
@@ -30,7 +30,7 @@ export interface Natives {
 	setMutationApproval(value: MutationApproval, approved?: boolean): Promise<SecuritySettings>;
 	install(source: string, approved?: boolean): Promise<string>;
 	remove(name: string, approved?: boolean): Promise<string>;
-	update(source: string, approved?: boolean): Promise<string>;
+	update(source: string, approved?: boolean): Promise<UpdateOutcome>;
 }
 
 export type PackageDaemonConnector = () => Promise<PackageDaemonPort>;
